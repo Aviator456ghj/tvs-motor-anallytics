@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "delta-exchange-mcp": {
+      "command": "uvx",
+      "args": ["delta-exchange-mcp"],
+      "env": {
+        "DELTA_MCP_ENV": "${DELTA_MCP_ENV:-india_prod}",
+        "DELTA_API_KEY": "${DELTA_API_KEY}",
+        "DELTA_API_SECRET": "${DELTA_API_SECRET}"
+      }
+    }
+  }
+}
