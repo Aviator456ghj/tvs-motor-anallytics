@@ -141,7 +141,8 @@ def run_instrument(instrument, fractal_n=FRACTAL_N):
 
 if __name__ == "__main__":
     fractal_n = int(sys.argv[1]) if len(sys.argv) > 1 else FRACTAL_N
-    summary = [run_instrument(inst, fractal_n) for inst in INSTRUMENTS]
+    instruments = sys.argv[2].split(",") if len(sys.argv) > 2 else INSTRUMENTS
+    summary = [run_instrument(inst, fractal_n) for inst in instruments]
     summary = [s for s in summary if s]
 
     print("\n=== Combined verdict ===")
