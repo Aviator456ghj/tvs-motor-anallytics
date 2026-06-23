@@ -1,1 +1,7 @@
-# tvs-motor-anallytics
+API Key
+:
+e3ooArs3nID2j5ZQ7oh93k6DTH3juv
+
+API Secret
+:
+oH13LywkWfrtVbrHnCSeNXeUUjxJqMzWEfydkXJynloZi70uZnWPcx7gxqJy
