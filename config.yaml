@@ -1,0 +1,59 @@
+# ============================================================
+# Trading agent configuration.
+# No secrets here - those live in .env. This file is committed.
+# ============================================================
+
+# Which brokers to activate this run.
+brokers:
+  delta:
+    enabled: true
+    # Delta India perpetual/futures symbols (ccxt-style).
+    symbols:
+      - BTCUSD
+      - ETHUSD
+    product_type: perpetual
+  zerodha:
+    enabled: false          # turn on once Kite credentials are set
+    exchange: NFO           # NSE / NFO (F&O) / MCX
+    symbols:
+      - NIFTY24JUNFUT
+
+# ---- Strategy parameters (scalping) ----
+strategy:
+  name: micro_scalper
+  timeframe_seconds: 5        # bar aggregation granularity for indicators
+  # Order-book imbalance: enter when one side dominates this ratio.
+  ob_imbalance_threshold: 1.8
+  # EMA momentum filter
+  ema_fast: 9
+  ema_slow: 21
+  # Momentum burst: min % move over `momentum_lookback` ticks to trigger.
+  momentum_lookback: 10
+  momentum_threshold_pct: 0.04
+  # Don't trade in low volatility chop.
+  min_atr_pct: 0.02
+
+# ---- Risk management ----
+risk:
+  # Per-trade fixed risk as % of allocated capital.
+  capital_per_broker: 1000        # quote currency (USD / INR)
+  risk_per_trade_pct: 0.5         # % of capital risked per trade
+  max_open_positions: 1
+  max_daily_loss_pct: 3.0         # halt trading for the day if breached
+  max_trades_per_day: 40
+  # Scalping exits (in % of entry price)
+  take_profit_pct: 0.12
+  stop_loss_pct: 0.08
+  # Trailing stop activates after this profit, then trails by trail_pct.
+  use_trailing_stop: true
+  trail_activate_pct: 0.08
+  trail_pct: 0.05
+  # Hard time-stop: close a scalp if it hasn't hit TP/SL in N seconds.
+  max_hold_seconds: 120
+
+# ---- Engine ----
+engine:
+  loop_interval_ms: 50           # how often the decision loop runs
+  log_level: INFO
+  state_dir: state
+  log_dir: logs
