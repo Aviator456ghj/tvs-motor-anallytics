@@ -67,9 +67,55 @@ def ema_stack_bullish(row, tol=0.0):
     return row["ema5"] > row["ema9"] > row["ema13"] > row["ema21"]
 
 
+def add_swing_structure(df, fractal_window=2):
+    """Fractal swing-high detection + bullish BOS flag, computed without
+    lookahead: a swing high at bar p is only "known" once fractal_window
+    bars have printed after it, matching when a real-time chart would
+    actually confirm the fractal. bos_up marks the first bar whose close
+    breaks above the most recently confirmed swing high -- the structural
+    break visible as BOS/ChoCh labels in the trader's chart markup."""
+    df = df.copy()
+    h = df["high"].values
+    c = df["close"].values
+    n = len(df)
+
+    is_swing_high = np.zeros(n, dtype=bool)
+    for k in range(fractal_window, n - fractal_window):
+        seg = h[k - fractal_window:k + fractal_window + 1]
+        if h[k] == seg.max() and (seg == h[k]).sum() == 1:
+            is_swing_high[k] = True
+
+    last_level = np.full(n, np.nan)
+    confirmed_level = np.nan
+    for k in range(n):
+        p = k - fractal_window
+        if p >= 0 and is_swing_high[p]:
+            confirmed_level = h[p]
+        last_level[k] = confirmed_level
+
+    bos_up = np.zeros(n, dtype=bool)
+    for k in range(1, n):
+        lvl, prev_lvl = last_level[k], last_level[k - 1]
+        broke_now = not np.isnan(lvl) and c[k] > lvl
+        broke_before = not np.isnan(prev_lvl) and c[k - 1] > prev_lvl
+        if broke_now and not broke_before:
+            bos_up[k] = True
+
+    df["last_swing_high"] = last_level
+    df["bos_up"] = bos_up
+    return df
+
+
+def recent_bos(df, end_idx, lookback=6):
+    """True if a fresh bullish BOS occurred in the lookback bars up to and
+    including end_idx (inclusive)."""
+    start = max(0, end_idx - lookback + 1)
+    return bool(df["bos_up"].iloc[start:end_idx + 1].any())
+
+
 def run_backtest(df, use_kill_zone=True, use_close_stop=True, max_scan_bars=20,
                   rr_cap=20.0, min_rr=20.0, stop_buffer=0.0005, kill_zone_fn=in_kill_zone,
-                  zone_frac=0.5, legacy_midline=False):
+                  zone_frac=0.5, legacy_midline=False, require_bos=False, bos_lookback=6):
     """
     df: 30m OHLC with emas + bias_long + ts (UTC), already cleaned & indexed 0..n-1.
     Returns list of trade dicts.
@@ -96,6 +142,10 @@ def run_backtest(df, use_kill_zone=True, use_close_stop=True, max_scan_bars=20,
             continue
 
         if not row_i["bias_long"] or not ema_stack_bullish(row_i):
+            i += 1
+            continue
+
+        if require_bos and not recent_bos(df, i, bos_lookback):
             i += 1
             continue
 
@@ -207,10 +257,15 @@ if __name__ == "__main__":
     dfd = load_csv(path_daily)
     df30 = add_emas(df30, periods=(5, 9, 13, 21))
     df30 = daily_bias_series(df30, dfd)
+    df30 = add_swing_structure(df30)
 
     print(f"Bars: {len(df30)}  range: {df30['ts'].iloc[0]} -> {df30['ts'].iloc[-1]}")
     years = (df30["ts"].iloc[-1] - df30["ts"].iloc[0]).days / 365.25
 
-    print(f"\n=== Kill zone filter: {use_kz} ===")
+    print(f"\n=== Kill zone filter: {use_kz}, BOS filter: off ===")
     trades = run_backtest(df30, use_kill_zone=use_kz)
     summarize(trades, years)
+
+    print(f"\n=== Kill zone filter: {use_kz}, BOS filter: on ===")
+    trades_bos = run_backtest(df30, use_kill_zone=use_kz, require_bos=True)
+    summarize(trades_bos, years)

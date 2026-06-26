@@ -29,6 +29,32 @@ selected via the `legacy_midline` flag on `run_backtest()`:
 | Legacy (midline) | intrabar (hard stop) | 704 | 19.0% | +498.11R | -44.28R |
 | Current (zone) | intrabar (hard stop) | 726 | 18.7% | **+483.22R** | -49.28R |
 
+## BOS/ChoCh structure filter (added after comparing against trader's whiteboard + chart frames)
+
+The trader's chart markup shows explicit BOS (break of structure) / ChoCh labels as part of
+his confirmation, which the base engine above does not model. `add_swing_structure()` adds a
+no-lookahead fractal swing-high detector and `bos_up` flag (a fresh close above the most
+recently confirmed swing high); `run_backtest(..., require_bos=True)` requires a bullish BOS
+within `bos_lookback` (default 6) bars of the FVG bar before accepting the setup, on the theory
+that the AMD-diagram sequence is sweep -> break of structure -> FVG forms in the expansion leg.
+
+Current (zone), intrabar (hard stop):
+
+| Kill zone | BOS filter | Trades | Win rate | Total R | Max DD |
+|---|---|---|---|---|---|
+| ON | off | 140 | 25.0% | +137.86R | -20.60R |
+| ON | on | 93 | 28.0% | +98.78R | -15.00R |
+| OFF | off | 726 | 18.7% | +483.22R | -49.28R |
+| OFF | on | 535 | 17.9% | +312.09R | -33.57R |
+
+**Verdict: the BOS filter is not worth keeping as currently specified.** It cuts trade
+frequency by ~25-34% but only nudges win rate (+3pp with kill zone, -0.8pp without) — it screens
+out winners along with losers, so total R drops in every config despite the marginally smaller
+drawdown. The real trader's discretionary BOS reading is evidently doing more than "did price
+recently break a fractal swing high"; a naive structural filter doesn't capture it. Left in the
+module (`require_bos` defaults to `False`, base results above are unaffected) for anyone who
+wants to refine the BOS logic further, but not adopted as the default.
+
 ## Reproduce
 
 ```bash
