@@ -75,3 +75,55 @@ Across nearly every parameterization the strategy is a net loser over this
 well above 1), but the win rate (~25-30%) isn't high enough to overcome
 that in a market that trended rather than mean-reverting back through
 full swing ranges as often as the rulebook assumes.
+
+## Variant: Trend-filtered (50/200 SMA gate)
+
+`trend_filtered_backtest.py` keeps the identical Fib entry/SL/TP math and
+only adds a macro trend gate: LONG-the-dip setups require 50-day SMA >
+200-day SMA, SHORT-the-bounce setups require 50-day SMA < 200-day SMA;
+counter-trend setups are skipped. Swept across the same threshold range
+(see `results_trend_filtered.txt`):
+
+| Threshold | Closed trades | Win rate | Net P&L |
+|---|---|---|---|
+| 5% | 32 | 25.0% | -$636 |
+| 6% | 26 | 23.1% | -$551 |
+| 8% | 18 | 11.1% | -$633 |
+| 10% | 14 | 7.1% | -$537 |
+| 12% | 9 | 11.1% | -$287 |
+| 15% | 4 | 0.0% | -$200 |
+
+**The trend filter is not a fix.** It is worse than the unfiltered baseline
+at every threshold except 5%/6% (roughly a tie), and net P&L stays negative
+everywhere. Macro SMA trend direction does not predict whether a 61.8%
+retracement entry resolves to TP or SL on this series — the failure mode
+isn't "fighting the trend," it's that price extends past the swing point
+(see swing-anatomy finding below) more often than it retraces back to a
+tradeable Fib zone, regardless of macro trend.
+
+## Variant: Breakout-continuation (trade with the extension, not the retrace)
+
+`swing_anatomy.py` decodes all 69 legs mathematically and finds 54.4% of
+legs *extend* past the prior swing point rather than retracing into the
+38.2-61.8% zone the strategy is built around — and a Monte Carlo test shows
+the apparent Fibonacci-ratio clustering in leg-to-leg ranges is **not
+statistically significant** (p=0.879 on price ratios, p=0.979 on time
+ratios vs. a fitted lognormal null). `breakout_continuation_backtest.py`
+tests trading with that extension bias (buy/sell-stop breakout of the prior
+swing point, structural SL at the leg origin, 100% measured-move TP).
+At 8% threshold this looked attractive (5W/2L, 71.4%, +$118) but the same
+threshold sweep shows it isn't robust — most other thresholds are
+net-negative with 38-50% win rates on tiny samples (2-21 trades).
+
+## Bottom line across all variants
+
+| Strategy | Best single result | Robust across thresholds? |
+|---|---|---|
+| Original Fibonacci retracement | 24.5% WR, -$837 | Yes (consistently net-negative) |
+| Trend-filtered (50/200 SMA) | 11-25% WR, -$200 to -$636 | Yes (consistently worse or flat) |
+| Breakout-continuation | 71.4% WR, +$118 (n=7) | **No** — cherry-picked single threshold |
+| CVD divergence (real + proxy) | 0% WR, -$100 (n=2 each) | Sample too small to judge |
+
+None of the tested variants produces a robust, statistically meaningful
+high-win-rate edge on this BTCUSD daily dataset. See
+`CVD_STRATEGY_COMPARISON.md` for the CVD-specific writeup.
