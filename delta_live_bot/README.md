@@ -32,9 +32,9 @@ stop — same convention as the backtest.
 
 ```
 cd delta_live_bot
-pip install requests
+pip install -r requirements.txt
 cp .env.example .env   # fill in DELTA_API_KEY / DELTA_API_SECRET, keep DRY_RUN=true
-export $(grep -v '^#' .env | xargs)   # or use a proper env loader
+set -a && source .env && set +a
 python3 delta_client.py                # selftest - confirm endpoints work
 python3 bot.py                          # single dry-run pass
 ```
@@ -53,16 +53,63 @@ still fetches live data and computes the real trigger/size, just doesn't
 call `place_order`. Verify several dry-run passes look correct before
 flipping the gates.
 
-## Running it continuously
+## Running it continuously (systemd)
 
-`python3 bot.py --loop 3600` re-checks hourly forever (cheap, since
-candles are daily — triggers only change once a new candle closes).
-This is a foreground process: it stops the moment the host running it
-stops. If you're running it inside an ephemeral Claude Code session
-container, it will NOT survive container reclamation — for real 24/7
-monitoring, run it on infrastructure you control (a small VM/systemd
-service, your own server, etc.), with `--loop` or an external cron
-calling it on a schedule.
+`python3 bot.py --loop 3600` re-checks forever in the foreground, but
+dies the moment your SSH session or terminal closes. For real 24/7
+monitoring on the VPS, install it as a systemd service instead:
+
+```
+sudo cp deploy/delta-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now delta-bot.service
+journalctl -u delta-bot.service -f       # tail logs
+```
+
+Edit `deploy/delta-bot.service` first if your checkout path or user isn't
+`/home/ubuntu/tvs-motor-anallytics` / `ubuntu`. `Restart=always` means it
+comes back up after a crash or a reboot. Each pass writes a snapshot to
+`status.json` (or wherever `BOT_STATUS_FILE` points) — that's what the
+dashboard below reads.
+
+## Monitoring dashboard
+
+`dashboard/app.py` is a small Flask app showing the current trading mode,
+service state, the leg it's currently watching, the most recent trigger,
+and wallet balance (fetched on demand). It can start/stop/restart the
+`delta-bot.service` unit, but it never touches `.env` or the `DRY_RUN`/
+`LIVE_TRADING_CONFIRM` gates — those stay a deliberate, SSH-only edit.
+
+```
+sudo cp deploy/delta-dashboard.service /etc/systemd/system/
+sudo cp deploy/sudoers-delta-bot /etc/sudoers.d/delta-bot   # see its header first
+sudo chmod 440 /etc/sudoers.d/delta-bot
+sudo systemctl daemon-reload
+sudo systemctl enable --now delta-dashboard.service
+```
+
+**Set `DASHBOARD_USER` and `DASHBOARD_PASSWORD` in `.env` before exposing
+this anywhere beyond localhost** — without both set, `dashboard/app.py`
+refuses to bind to anything but `127.0.0.1` on purpose, since an
+unauthenticated page that can start/stop a trading bot should never be
+reachable from the public internet. Even with credentials set, this is
+plain HTTP Basic Auth with no TLS — fine over an SSH tunnel
+(`ssh -L 8080:localhost:8080 ubuntu@<vps-ip>`, then browse
+`http://localhost:8080`), risky if bound to a public IP/port directly. If
+you do want it reachable by URL, put it behind a reverse proxy (nginx +
+Let's Encrypt) rather than exposing Flask's dev server raw.
+
+## Adding more strategies later
+
+Right now `strategy.py`/`bot.py` hardcode the one breakout-continuation
+ruleset. `swing_strategy/` already has several other backtested
+candidates (`breakout_continuation_v2_backtest.py`, `cvd_divergence_backtest.py`,
+`measured_swing_backtest.py`, `trend_filtered_backtest.py`) that aren't
+wired into live trading yet. `status.json`'s schema (`symbol`, `watching`,
+`last_trigger`) and the dashboard's card layout were kept generic enough
+that adding a second live strategy mostly means: a second `STATUS_FILE`/
+state file pair, a second systemd unit, and another card on the dashboard
+reading that strategy's status file — not a rewrite.
 
 ## Known gaps / things to verify empirically, not assume
 

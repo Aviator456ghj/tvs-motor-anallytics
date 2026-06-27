@@ -1,0 +1,27 @@
+# Keeps the monitoring dashboard up continuously, independent of whether
+# delta-bot.service is running. Install with:
+#   sudo cp deploy/delta-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now delta-dashboard.service
+#   journalctl -u delta-dashboard.service -f
+#
+# Also install deploy/sudoers-delta-bot (see its header) so this dashboard
+# can start/stop/restart delta-bot.service. Without DASHBOARD_USER/PASSWORD
+# set in .env, the dashboard refuses to bind beyond 127.0.0.1 - see
+# dashboard/app.py.
+[Unit]
+Description=Delta Live Bot - monitoring dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tvs-motor-anallytics/delta_live_bot
+EnvironmentFile=/home/ubuntu/tvs-motor-anallytics/delta_live_bot/.env
+ExecStart=/usr/bin/python3 dashboard/app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

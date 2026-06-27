@@ -32,7 +32,15 @@ BALANCE_OVERRIDE_USD = os.environ.get("BALANCE_OVERRIDE_USD", "")
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() != "false"
 LIVE_TRADING_CONFIRM = os.environ.get("LIVE_TRADING_CONFIRM", "")  # must equal "I_UNDERSTAND_THE_RISK"
 
-STATE_FILE = os.environ.get("BOT_STATE_FILE", os.path.join(os.path.dirname(__file__), "bot_state.json"))
+# `or` (not `.get(key, default)`) so an explicitly-blank value from a
+# sourced .env (e.g. `BOT_STATE_FILE=`) still falls back to the default
+# instead of resolving to "", which open() would reject at save time.
+STATE_FILE = os.environ.get("BOT_STATE_FILE") or os.path.join(os.path.dirname(__file__), "bot_state.json")
+STATUS_FILE = os.environ.get("BOT_STATUS_FILE") or os.path.join(os.path.dirname(__file__), "status.json")
+
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8080"))
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
 
 def live_orders_enabled():

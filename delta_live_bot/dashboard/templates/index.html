@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delta Live Bot — {{ symbol }}</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #131a22; --border: #233040; --text: #d8e1ea;
+    --muted: #7f93a8; --green: #34d399; --red: #f87171; --yellow: #fbbf24; --blue: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600;
+  }
+  .row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+  .row .k { color: var(--muted); }
+  .row .v { font-weight: 500; text-align: right; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600;
+  }
+  .badge.green { background: rgba(52,211,153,.15); color: var(--green); }
+  .badge.red { background: rgba(248,113,113,.15); color: var(--red); }
+  .badge.yellow { background: rgba(251,191,36,.15); color: var(--yellow); }
+  .badge.blue { background: rgba(96,165,250,.15); color: var(--blue); }
+  .badge.muted { background: rgba(127,147,168,.15); color: var(--muted); }
+  .warn {
+    background: rgba(251,191,36,.1); border: 1px solid var(--yellow); color: var(--yellow);
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
+  }
+  button {
+    background: var(--border); color: var(--text); border: none; border-radius: 6px;
+    padding: 6px 12px; font-size: 13px; cursor: pointer; margin-left: 6px;
+  }
+  button:hover { background: #2c3c4f; }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { margin-top: 12px; display: flex; justify-content: flex-end; }
+  .msg { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .updated { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Delta Live Bot — {{ symbol }} breakout-continuation</h1>
+  <div class="sub">Auto-refreshes every 15s &middot; <span class="updated" id="updated-at">loading...</span></div>
+
+  {% if auth_warning %}
+  <div class="warn">
+    No DASHBOARD_USER/DASHBOARD_PASSWORD set — this page is only reachable from
+    localhost. Set both in .env and restart delta-dashboard.service to expose it.
+  </div>
+  {% endif %}
+
+  <div class="grid">
+    <div class="card">
+      <h2>Mode</h2>
+      <div class="row"><span class="k">Trading mode</span><span class="v" id="mode-badge">…</span></div>
+      <div class="row"><span class="k">Service</span><span class="v" id="service-badge">…</span></div>
+      <div class="actions">
+        <button onclick="serviceAction('start')">Start</button>
+        <button onclick="serviceAction('restart')">Restart</button>
+        <button onclick="serviceAction('stop')">Stop</button>
+      </div>
+      <div class="msg" id="service-msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Last bar checked</h2>
+      <div class="row"><span class="k">Date</span><span class="v" id="bar-date">—</span></div>
+      <div class="row"><span class="k">Close</span><span class="v" id="bar-close">—</span></div>
+      <div class="row"><span class="k">Last pass</span><span class="v" id="pass-msg">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Currently watching</h2>
+      <div class="row"><span class="k">Direction</span><span class="v" id="w-dir">—</span></div>
+      <div class="row"><span class="k">Swing origin → point</span><span class="v" id="w-swing">—</span></div>
+      <div class="row"><span class="k">Breakout level</span><span class="v" id="w-breakout">—</span></div>
+      <div class="row"><span class="k">SL / TP</span><span class="v" id="w-sltp">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Last trigger</h2>
+      <div class="row"><span class="k">Outcome</span><span class="v" id="t-outcome">none yet</span></div>
+      <div class="row"><span class="k">Direction / date</span><span class="v" id="t-dir">—</span></div>
+      <div class="row"><span class="k">Breakout / SL / TP</span><span class="v" id="t-levels">—</span></div>
+      <div class="row"><span class="k">Contracts / risk / notional</span><span class="v" id="t-size">—</span></div>
+      <div class="row"><span class="k">Balance at trigger</span><span class="v" id="t-balance">—</span></div>
+      <div class="row"><span class="k">Triggered at</span><span class="v" id="t-time">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Wallet balance</h2>
+      <div class="row"><span class="k">USD/USDT balance</span><span class="v" id="live-balance">—</span></div>
+      <div class="actions"><button onclick="refreshBalance()">Refresh now</button></div>
+      <div class="msg" id="balance-msg"></div>
+    </div>
+  </div>
+
+<script>
+function badge(text, color) {
+  return `<span class="badge ${color}">${text}</span>`;
+}
+
+async function refreshStatus() {
+  const res = await fetch("/api/status");
+  const data = await res.json();
+  const s = data.status || {};
+  const w = s.watching;
+  const t = s.last_trigger;
+
+  document.getElementById("updated-at").textContent = s.updated_at
+    ? `last updated ${s.updated_at}` : "no status yet — has bot.py run?";
+
+  document.getElementById("mode-badge").innerHTML = data.safety.dry_run
+    ? badge("DRY RUN", "yellow")
+    : (data.safety.live_trading_confirm_set ? badge("LIVE", "red") : badge("LIVE (unconfirmed)", "red"));
+
+  const svc = data.service_state;
+  const svcColor = svc === "active" ? "green" : (svc === "failed" ? "red" : "muted");
+  document.getElementById("service-badge").innerHTML = badge(svc, svcColor);
+
+  document.getElementById("bar-date").textContent = s.last_bar ? s.last_bar.date : "—";
+  document.getElementById("bar-close").textContent = s.last_bar ? s.last_bar.close : "—";
+  document.getElementById("pass-msg").textContent = s.last_pass_message || "—";
+
+  if (w) {
+    document.getElementById("w-dir").innerHTML = badge(w.direction, w.direction === "LONG" ? "green" : "red");
+    document.getElementById("w-swing").textContent = `${w.swing_origin} → ${w.swing_point}`;
+    document.getElementById("w-breakout").textContent = w.breakout_level;
+    document.getElementById("w-sltp").textContent = `${w.sl} / ${w.tp}`;
+  }
+
+  if (t) {
+    const outcomeColor = t.outcome === "live_order_placed" ? "green"
+      : (t.outcome === "order_failed_will_retry" ? "red" : "blue");
+    document.getElementById("t-outcome").innerHTML = badge(t.outcome, outcomeColor);
+    document.getElementById("t-dir").textContent = `${t.direction} / ${t.triggered_date}`;
+    document.getElementById("t-levels").textContent = `${t.breakout_level} / ${t.sl} / ${t.tp}`;
+    document.getElementById("t-size").textContent = `${t.contracts} / $${t.risk_amount} / $${t.notional_usd}`;
+    document.getElementById("t-balance").textContent = `$${t.balance}`;
+    document.getElementById("t-time").textContent = t.triggered_at;
+  }
+}
+
+async function serviceAction(action) {
+  const msg = document.getElementById("service-msg");
+  msg.textContent = `${action}ing...`;
+  const res = await fetch(`/api/service/${action}`, { method: "POST" });
+  const data = await res.json();
+  msg.textContent = data.ok ? `${action} ok` : `error: ${data.error}`;
+  refreshStatus();
+}
+
+async function refreshBalance() {
+  const msg = document.getElementById("balance-msg");
+  msg.textContent = "fetching...";
+  const res = await fetch("/api/balance");
+  const data = await res.json();
+  if (data.ok) {
+    document.getElementById("live-balance").textContent = `$${data.balance.toFixed(2)}`;
+    msg.textContent = "";
+  } else {
+    msg.textContent = `error: ${data.error}`;
+  }
+}
+
+refreshStatus();
+setInterval(refreshStatus, 15000);
+</script>
+</body>
+</html>

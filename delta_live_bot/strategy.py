@@ -87,6 +87,17 @@ def build_breakout_setup(p0: Pivot, p1: Pivot):
     }
 
 
+def current_watch(bars):
+    """Same anchor as evaluate_latest_leg (pivots[-3]/[-2]) but returns the
+    setup unconditionally - even if already handled or not yet triggered -
+    purely for status/dashboard display, never for trade decisions."""
+    pivots = find_pivots(bars)
+    if len(pivots) < 3:
+        return None
+    p0, p1 = pivots[-3], pivots[-2]
+    return build_breakout_setup(p0, p1)
+
+
 def evaluate_latest_leg(bars, already_handled_leg_key):
     """Returns a trigger dict if the most recently CONFIRMED leg has
     broken out and hasn't already been acted on, else None."""
