@@ -24,12 +24,13 @@ import time
 
 from config import (
     PRODUCT_SYMBOL, RESOLUTION, RISK_PCT, STATE_FILE, STATUS_FILE, live_orders_enabled, DRY_RUN,
-    BALANCE_OVERRIDE_USD,
+    LIVE_TRADING_CONFIRM, BALANCE_OVERRIDE_USD,
 )
 from delta_client import DeltaClient
 from strategy import evaluate_latest_leg, current_watch
 
 LOOKBACK_DAYS = 400  # enough daily bars for ZIGZAG_THRESHOLD=8% pivots to form
+LIVE_TRADING_CONFIRMED = LIVE_TRADING_CONFIRM == "I_UNDERSTAND_THE_RISK"
 
 
 def load_state():
@@ -147,8 +148,9 @@ def run_once(client):
     if setup is None:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] no new triggered breakout. "
               f"last bar: {bars[-1]['date']} close={bars[-1]['close']}")
-        save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, last_bar=last_bar,
-                    watching=watch_summary(watch), last_pass_message="no new triggered breakout")
+        save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
+                    last_bar=last_bar, watching=watch_summary(watch),
+                    last_pass_message="no new triggered breakout")
         return
 
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] TRIGGER: {setup['direction']} {PRODUCT_SYMBOL} "
@@ -158,8 +160,8 @@ def run_once(client):
     product = client.get_product(PRODUCT_SYMBOL)
     if product is None:
         print(f"ABORT: could not find product spec for {PRODUCT_SYMBOL}, not sizing or placing an order.")
-        save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, last_bar=last_bar,
-                    watching=watch_summary(watch),
+        save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
+                    last_bar=last_bar, watching=watch_summary(watch),
                     last_pass_message=f"ABORT: no product spec for {PRODUCT_SYMBOL}")
         return
 
@@ -192,8 +194,8 @@ def run_once(client):
         if resp.status_code not in (200, 201):
             print("Order placement failed, NOT marking this leg as handled - will retry next pass.")
             last_trigger["outcome"] = "order_failed_will_retry"
-            save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, last_bar=last_bar,
-                        watching=watch_summary(watch), last_trigger=last_trigger,
+            save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
+                        last_bar=last_bar, watching=watch_summary(watch), last_trigger=last_trigger,
                         last_pass_message="order placement failed, will retry")
             return
         last_trigger["outcome"] = "live_order_placed"
@@ -205,8 +207,8 @@ def run_once(client):
 
     state["last_handled_leg_key"] = setup["leg_key"]
     save_state(state)
-    save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, last_bar=last_bar,
-                watching=watch_summary(watch), last_trigger=last_trigger,
+    save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
+                last_bar=last_bar, watching=watch_summary(watch), last_trigger=last_trigger,
                 last_pass_message=f"TRIGGER handled: {setup['direction']} ({last_trigger['outcome']})")
 
 
@@ -223,7 +225,8 @@ def main():
             run_once(client)
         except Exception as e:
             print(f"ERROR during pass: {e}", file=sys.stderr)
-            save_status(last_pass_message=f"ERROR: {e}", dry_run=DRY_RUN, symbol=PRODUCT_SYMBOL)
+            save_status(last_pass_message=f"ERROR: {e}", dry_run=DRY_RUN,
+                        live_trading_confirmed=LIVE_TRADING_CONFIRMED, symbol=PRODUCT_SYMBOL)
         if args.loop <= 0:
             break
         time.sleep(args.loop)

@@ -86,9 +86,16 @@ def api_status():
         "status": status,
         "last_handled_leg_key": state.get("last_handled_leg_key"),
         "service_state": service_state(),
+        # Sourced from status.json (written by bot.py's own process on its last
+        # pass), not this dashboard process's own config import - the dashboard
+        # and bot.py are restarted independently, so the dashboard's own env
+        # snapshot can go stale relative to the bot's actual running config.
+        # Falls back to this process's config only if bot.py has never run yet.
         "safety": {
-            "dry_run": DRY_RUN,
-            "live_trading_confirm_set": LIVE_TRADING_CONFIRM == "I_UNDERSTAND_THE_RISK",
+            "dry_run": status.get("dry_run", DRY_RUN),
+            "live_trading_confirm_set": status.get(
+                "live_trading_confirmed", LIVE_TRADING_CONFIRM == "I_UNDERSTAND_THE_RISK"
+            ),
         },
     })
 
