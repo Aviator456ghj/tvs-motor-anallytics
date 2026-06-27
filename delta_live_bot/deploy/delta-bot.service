@@ -17,6 +17,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/tvs-motor-anallytics/delta_live_bot
 EnvironmentFile=/home/ubuntu/tvs-motor-anallytics/delta_live_bot/.env
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 bot.py --loop 900
 Restart=always
 RestartSec=10
