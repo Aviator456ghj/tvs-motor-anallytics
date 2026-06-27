@@ -159,6 +159,56 @@ legs "never broke out" in the confirmed sense), so even pooled across every
 threshold this is ~20 trades total — directionally robust, not yet a large
 enough sample to call statistically proven. See `results_breakout_continuation_v2.txt`.
 
+## Variant: Cycle (sine-wave) analysis
+
+`cycle_sine_backtest.py` is a different family of method entirely - no zig-zag
+pivots, no Fibonacci ratios. It detrends price (`close - 50d SMA`) to isolate
+the oscillating component, then each bar fits a single dominant sinusoid to
+the trailing 180 days via a discrete Fourier coefficient scan (the
+periodogram - `a(T) = (2/W)*sum x_t*cos(2*pi*t/T)`, `b(T)` likewise with
+`sin`, scanned over candidate periods `T` from 10-60 days, picking the `T`
+with the largest `a^2+b^2`). The fitted wave's derivative
+(`-a*w*sin(wt) + b*w*cos(wt)`, using sin/cos's mutual derivative
+relationship) crossing zero marks a trough (LONG) or peak (SHORT). Every
+signal is gated by real price momentum over the last 3 days - the curve fit
+alone is never trusted to trade. Stop-loss is structural (20-day swing
+low/high + 2% buffer); take-profit is sized off the fitted cycle's own
+amplitude (`sqrt(a^2+b^2)`), not an arbitrary Fibonacci ratio.
+
+At the default config (180d fit window, TP = 1.0x amplitude): 19 cycle-turn
+signals detected, only 5 (26%) passed the momentum filter and got traded -
+3W/2L, 60% WR, but net **-$36** on a $5,000 account (losers are bigger than
+winners here). See `results_cycle_sine.txt` for the full sweep.
+
+| Fit window | TP x amplitude | Closed | Win rate | Net P&L |
+|---|---|---|---|---|
+| 120d | 0.50-1.00 | 5 | 80.0% | -$16 to +$18 |
+| 120d | 1.50-2.00 | 5 | 40.0% | -$101 to -$84 |
+| 150d | 0.50-2.00 | 6-7 | 33.3-71.4% | -$55 to -$19 |
+| 180d | 0.50-2.00 | 5 | 60.0% | -$68 to +$28 |
+| 240d | 0.50-2.00 | 5-6 | 80.0-83.3% | -$20 to +$48 |
+
+**Not a usable edge yet, for three reasons, not just "small sample":**
+
+1. Every sample is tiny (5-7 trades) - same caveat as breakout-continuation
+   v1, and for the same reason: too few closed trades to distinguish skill
+   from noise.
+2. The detected dominant period clusters at 56-60 days - right at the edge
+   of the 10-60d range that was scanned. That's the signature of a
+   periodogram hitting a wall, not necessarily evidence of a genuine
+   ~58-day BTC cycle; the scan range itself needs widening (and rerunning)
+   before trusting that number.
+3. Flipping the TP multiple flips the sign of several cells (e.g. 120d:
+   profitable at 0.5-1.0x, sharply negative at 1.5-2.0x) with no consistent
+   direction across fit windows - the opposite of the kind of monotonic,
+   parameter-insensitive result that made v2's grid convincing.
+
+The honest takeaway: the math is real (genuine discrete Fourier fit, real
+derivative-based turning-point detection, real momentum confirmation, no
+lookahead) but on this ~2-year BTCUSD window it hasn't yet produced
+anything as robust as breakout-continuation v2. Worth widening the period
+scan range and collecting more data before drawing a conclusion either way.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -168,6 +218,7 @@ enough sample to call statistically proven. See `results_breakout_continuation_v
 | Breakout-continuation v1 | 71.4% WR, +$118 (n=7) | **No** — cherry-picked single threshold |
 | Breakout-continuation v2 | 42.9-50% WR, +$46 to +$91 | **Yes** — positive at every threshold with real sample, but total n is thin (~20 trades pooled) |
 | CVD divergence (real + proxy) | 0% WR, -$100 (n=2 each) | Sample too small to judge |
+| Cycle (sine-wave) | 80-83% WR, +$18 to +$48 (n=5-6) | **No** - sign flips with TP multiple, period hugs scan boundary |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
