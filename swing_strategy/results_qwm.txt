@@ -1,0 +1,55 @@
+==============================================================================================================
+QUANTUM WAVE MATRIX (QWM) - BTCUSD 5-MINUTE BACKTEST
+==============================================================================================================
+Data range: 2026-05-28 10:10:00 -> 2026-06-27 10:25:00  (8644 5m candles)
+Angle threshold: +/-70.0deg (ATR-normalized)   Phase threshold: +/-0.995   Mass z-threshold: 1.0
+Liquidity gates (NY time): London 03:00:00-06:30:00, NY 08:30:00-11:30:00
+
+  # Dir    Entry             Exit                 EntryPx         SL         TP     Th    Phi  MassZ Res        PnL$      R W-L     
+
+--------------------------------------------------------------------------------------------------------------
+FUNNEL (how many candidates survive each gate)
+  Angle >= 70.0deg (and outside chop band) : 0
+  + phase confirms                          : 0
+  + mass z-score confirms                   : 0
+  + valid macro target -> traded             : 0
+
+SUMMARY
+Trades still open at data end   : 0
+Closed trades                   : 0
+  Wins                          : 0
+  Losses                        : 0
+
+--------------------------------------------------------------------------------------------------------------
+ANGLE DISTRIBUTION DIAGNOSTIC (inside liquidity gates only)
+--------------------------------------------------------------------------------------------------------------
+In-gate bars sampled        : 2322
+Max |Theta| ever reached    : 54.8deg  (playbook's literal trigger is 70deg)
+99th percentile |Theta|     : 42.2deg
+Mean |Theta|                : 14.0deg
+Bars with |Theta| > 45deg     : 12
+Bars with |Theta| > 60deg     : 0
+Bars with |Theta| > 70deg     : 0
+
+--------------------------------------------------------------------------------------------------------------
+PARAMETER SWEEP (angle threshold x phase threshold)
+--------------------------------------------------------------------------------------------------------------
+AngleDeg PhaseThr Funnel(traded) Closed   W   L  WinRate     NetPnL
+    30.0    0.900              0      0   0   0     0.0%      +0.00
+    30.0    0.950              0      0   0   0     0.0%      +0.00
+    30.0    0.995              0      0   0   0     0.0%      +0.00
+    40.0    0.900              0      0   0   0     0.0%      +0.00
+    40.0    0.950              0      0   0   0     0.0%      +0.00
+    40.0    0.995              0      0   0   0     0.0%      +0.00
+    50.0    0.900              0      0   0   0     0.0%      +0.00
+    50.0    0.950              0      0   0   0     0.0%      +0.00
+    50.0    0.995              0      0   0   0     0.0%      +0.00
+    60.0    0.900              0      0   0   0     0.0%      +0.00
+    60.0    0.950              0      0   0   0     0.0%      +0.00
+    60.0    0.995              0      0   0   0     0.0%      +0.00
+    70.0    0.900              0      0   0   0     0.0%      +0.00
+    70.0    0.950              0      0   0   0     0.0%      +0.00
+    70.0    0.995              0      0   0   0     0.0%      +0.00
+    80.0    0.900              0      0   0   0     0.0%      +0.00
+    80.0    0.950              0      0   0   0     0.0%      +0.00
+    80.0    0.995              0      0   0   0     0.0%      +0.00

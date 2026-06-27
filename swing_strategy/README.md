@@ -209,6 +209,85 @@ lookahead) but on this ~2-year BTCUSD window it hasn't yet produced
 anything as robust as breakout-continuation v2. Worth widening the period
 scan range and collecting more data before drawing a conclusion either way.
 
+## Variant: Quantum Wave Matrix (QWM) — 5-minute multi-confirmation scalp
+
+`qwm_backtest.py` implements a much more elaborate pasted playbook ("THE
+QUANT QUANTUM WAVE MATRIX") that requires three signals to align
+simultaneously on 5-minute BTCUSD bars, inside two daily liquidity windows
+(London 03:00-06:30 NY, New York 08:30-11:30 NY):
+
+1. **Vector angle Θ** — a price/time "angle" of a recent expansion leg,
+   trigger at Θ≥+70° / ≤-70°, silence inside ±45°.
+2. **π-radial cycle phase Φ(t)=sin(ωt+φ)** — trigger at Φ≥+0.995 / ≤-0.995.
+3. **"Structural Mass"** — a definite integral of price displacement,
+   trigger at ≥1.0.
+
+As pasted, none of these three were dimensionally sound enough to
+backtest as written, so three fixes were made (and documented in the
+module docstring) before any code ran:
+
+- **Θ made scale-invariant**: the raw `arctan(ΔPrice/ΔTime)` changes with
+  chart zoom because $ and bars aren't the same unit. Fixed by normalizing
+  the slope by ATR-per-bar first: `Θ = arctan( (Δprice/n) / ATR )`, so 70°
+  means "the same relative violence" on any asset/timeframe.
+- **Φ's ω and φ made fittable**: the playbook never says how to derive
+  the cycle frequency/phase from data. Fixed by reusing the discrete
+  Fourier periodogram fit from `cycle_sine_backtest.py`, run on a 4-hour
+  anchor series built from the same 5-minute data.
+- **Mass made dimensionless**: a raw $·bars integral has no natural "1.0"
+  threshold. Fixed by z-scoring it against its own trailing 200-sample
+  distribution — "≥1.0" now means "≥1 standard deviation of unusualness,"
+  a documented assumption since the original text wasn't specific here.
+
+Liquidity-gate session filter, stdev-based SL (0.5σ beyond the signal
+bar's wick), breakeven-at-1.5R, and the position-sizing formula were
+already well-defined in the playbook and implemented as specified.
+
+### Result: the literal spec produces zero trades on real data
+
+Running the corrected math on 30 days of real 5-minute BTCUSD (the only
+intraday dataset in this repo — the playbook's other four assets have no
+data here) produces **0 trades at every cell of a 6×3 angle×phase
+threshold sweep**, including the playbook's literal 70°/0.995 values. The
+`ANGLE DISTRIBUTION DIAGNOSTIC` block in `results_qwm.txt` shows why this
+isn't a software bug:
+
+| Metric (inside liquidity gates only) | Value |
+|---|---|
+| In-gate 5-min bars sampled | 2,322 |
+| Max \|Θ\| ever reached | 54.8° |
+| 99th percentile \|Θ\| | 42.2° |
+| Bars with \|Θ\| > 45° | 12 |
+| Bars with \|Θ\| > 60° or > 70° | 0 |
+
+The ATR-normalized angle never once reaches the playbook's 70° trigger
+in a month of real BTC 5-minute data — the highest it gets is 54.8°,
+and only 12 bars total (out of 2,322 in-gate bars) even clear the 45°
+"consolidation" floor. Of those 12, the H4 phase fit Φ never aligns in
+the matching direction near the required ±0.995 (observed values: 0.93,
+-0.55, 0.24, 0.04, and a few unscored bars too early for a phase fit) —
+so even loosening the phase threshold to 0.90 inside the swept grid still
+yields nothing.
+
+To confirm this is a parameter/data problem and not a bug, the engine was
+re-run with all three gates collapsed far below the spec (e.g. angle≥10°,
+phase≥0.0, mass z≥-5.0) purely as a code-correctness check — at that point
+entries fill, breakeven arms, SL/TP resolve, and position sizing computes
+correctly, producing a handful of real trades. That confirms the execution
+machinery works; it's the literal threshold *combination* the playbook
+specifies that this dataset never satisfies.
+
+**Honest verdict**: as written, this strategy is untestable on the data
+available — not because the math is unsound (it's now dimensionally
+correct) but because requiring three independent extreme conditions to
+co-occur, restricted to ~27% of the day, is so strict that a month of
+real BTC 5-minute data never produces a single qualifying signal. The
+playbook's own claim of "10-15 entries per asset per month" would require
+either a much longer backtest window, the other four assets it specifies,
+or thresholds well below 70°/0.995/1.0σ — none of which can be confirmed
+or denied from what's available here. This is a data-availability and
+threshold-calibration finding, not a verdict on the underlying idea.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -219,6 +298,7 @@ scan range and collecting more data before drawing a conclusion either way.
 | Breakout-continuation v2 | 42.9-50% WR, +$46 to +$91 | **Yes** — positive at every threshold with real sample, but total n is thin (~20 trades pooled) |
 | CVD divergence (real + proxy) | 0% WR, -$100 (n=2 each) | Sample too small to judge |
 | Cycle (sine-wave) | 80-83% WR, +$18 to +$48 (n=5-6) | **No** - sign flips with TP multiple, period hugs scan boundary |
+| Quantum Wave Matrix (QWM) | 0 trades at every swept threshold | Untestable — thresholds never co-occur on 30d of 5-min data |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
