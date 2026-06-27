@@ -22,6 +22,12 @@ TP_EXTENSION = 1.0
 
 RISK_PCT = float(os.environ.get("RISK_PCT", "0.01"))
 
+# Lets bot.py dry-run the trigger/sizing logic when the wallet-balance call
+# can't be authenticated (e.g. this session's IP isn't on Delta's whitelist).
+# Unset by default; never used to size or place a real order - that always
+# requires a real authenticated balance fetch.
+BALANCE_OVERRIDE_USD = os.environ.get("BALANCE_OVERRIDE_USD", "")
+
 # Safety gates. Both must be explicitly set for a real order to ever be placed.
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() != "false"
 LIVE_TRADING_CONFIRM = os.environ.get("LIVE_TRADING_CONFIRM", "")  # must equal "I_UNDERSTAND_THE_RISK"

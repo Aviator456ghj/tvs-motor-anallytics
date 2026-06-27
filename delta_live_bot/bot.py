@@ -24,6 +24,7 @@ import time
 
 from config import (
     PRODUCT_SYMBOL, RESOLUTION, RISK_PCT, STATE_FILE, live_orders_enabled, DRY_RUN,
+    BALANCE_OVERRIDE_USD,
 )
 from delta_client import DeltaClient
 from strategy import evaluate_latest_leg
@@ -72,8 +73,10 @@ def fetch_daily_bars(client, symbol):
 
 def size_position(client, product, entry_price, sl_price, balance_usd):
     """Same convention as the backtest: risk_amount = balance * RISK_PCT,
-    units = risk_amount / |entry - sl|, then converted to Delta's integer
-    contract count via the product's live contract_value."""
+    units = risk_amount / |entry - sl| (in the underlying currency, BTC for
+    BTCUSD). contract_value on Delta's vanilla BTCUSD product is denominated
+    in contract_unit_currency (BTC), NOT USD - confirmed live via
+    get_product(), not assumed - so contracts = units / contract_value."""
     risk_amount = balance_usd * RISK_PCT
     stop_distance = abs(entry_price - sl_price)
     if stop_distance <= 0:
@@ -83,11 +86,15 @@ def size_position(client, product, entry_price, sl_price, balance_usd):
     notional_usd = units * entry_price
 
     contract_value = float(product.get("contract_value", 1) or 1)
-    contracts = max(1, round(notional_usd / contract_value))
+    contracts = max(1, round(units / contract_value))
     return contracts, risk_amount, notional_usd
 
 
 def get_usd_balance(client):
+    if DRY_RUN and BALANCE_OVERRIDE_USD:
+        print(f"[DRY RUN] using BALANCE_OVERRIDE_USD={BALANCE_OVERRIDE_USD} instead of a live wallet fetch")
+        return float(BALANCE_OVERRIDE_USD)
+
     resp = client.get_wallet_balances()
     if resp.status_code != 200:
         raise RuntimeError(f"wallet balance fetch failed: {resp.status_code} {resp.text[:300]}")
