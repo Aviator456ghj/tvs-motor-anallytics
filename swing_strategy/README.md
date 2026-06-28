@@ -471,6 +471,64 @@ net-negative means: the directional read off the force sign isn't reliable
 enough to beat the cost of the stop, even though the destination prediction
 itself is a real, defensible piece of market structure.
 
+## Variant: Trendline + Fibonacci confluence
+
+`trendline_fibonacci_backtest.py` replaces the macro SMA gate (already
+shown above to be no fix at all) with an actual drawn **trendline**: the
+classic technical-analysis combo of connecting the last two same-kind
+swing pivots (two rising lows in an uptrend, two falling highs in a
+downtrend) and projecting that line forward as dynamic support/resistance.
+A retracement into the 50-61.8% Fib golden zone is only treated as a
+buyable/sellable continuation if it also respects this trendline; a close
+through both the trendline and the 78.6% invalidation line kills the setup
+instead of being entered.
+
+### Headline result (8% zig-zag threshold)
+
+| Metric | Value |
+|---|---|
+| Legs evaluated | 67 |
+| Never reached/survived the golden zone | 34 |
+| Touched zone but never bounced in time | 18 |
+| Closed trades | 15 |
+| Wins | 3 |
+| Losses | 12 |
+| Win rate | 20.0% |
+| Avg R-multiple | -0.09R |
+| Net P&L on $5,000 account | -$65.21 |
+| Longest win streak / loss streak | 1 / 7 |
+
+### Threshold × TP-extension sweep
+
+| Threshold | TP ext | Closed trades | Win rate | Net P&L |
+|---|---|---|---|---|
+| 5% | 1.000 | 27 | 18.5% | -$462 |
+| 5% | 1.272 | 27 | 18.5% | -$343 |
+| 5% | 1.618 | 27 | 18.5% | -$191 |
+| 6% | 1.000 | 27 | 22.2% | -$334 |
+| 8% | 1.000 | 15 | 26.7% | +$22 |
+| 8% | 1.272 | 15 | 20.0% | -$65 |
+| 8% | 1.618 | 14 | 14.3% | -$174 |
+| 10% | 1.000 | 14 | 7.1% | -$499 |
+| 12% | 1.000 | 9 | 11.1% | -$249 |
+| 15% | 1.000 | 4 | 25.0% | +$1 |
+
+Full 18-cell sweep in `results_trendline_fibonacci.txt`.
+
+**The trendline filter is not a fix either.** Adding a real structural
+trendline (rather than a macro SMA) on top of the Fib zone narrows the
+sample a lot (67 legs → 15 traded at 8%, vs. 69 legs → 49 traded for the
+unfiltered baseline) but the surviving setups are still net-negative or
+only marginally positive almost everywhere in the sweep — the two
+"winning" cells (+$22 at 8%/1.0, +$1 at 15%/1.0) have n=15 and n=4
+respectively, both too thin to read as edge, and every other one of the
+18 cells loses money. Win rates (7-27%) sit in the same range as the
+unfiltered and SMA-filtered variants. Confirming the structural trendline
+holds doesn't change the underlying finding from the swing-anatomy
+analysis: this market extends past swing points more often than it
+retraces cleanly back through a Fib zone, regardless of which trend
+filter is bolted onto the entry.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -486,6 +544,7 @@ itself is a real, defensible piece of market structure.
 | Trident System (30-min FVG/Doji) | 0 trades at every swept threshold | Untestable — the FVG precondition itself almost never occurs on 24/7 crypto candles |
 | Phase-rotation cycle (time-delay embedding) | 0 trades at default; -$1 to -$200 once coherence loosened | Yes (consistently thin-sample and net-negative once it can fire) |
 | Gravity-field price-magnet | 28.6% WR, -$234 (n=15) at default, real sample | Yes (3-29 trades/cell across the sweep, almost all net-negative) |
+| Trendline + Fibonacci confluence | 20-27% WR, -$65 to +$22 (n=15) at default | Yes (consistently net-negative or sub-$25 across 18 cells) |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
