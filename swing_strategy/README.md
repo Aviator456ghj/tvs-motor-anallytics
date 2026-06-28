@@ -685,6 +685,92 @@ market extends through technical structure - swing points, Fib zones,
 trendlines, order blocks, and now visible delta exhaustion - more often
 than it reverses off it.
 
+## Variant: Block-trade confirmed order block (real institutional footprint)
+
+After the order-flow variant above, the next ask was for genuine
+"big player" evidence rather than another derived technical indicator.
+The most direct version of that would be historical order-book depth —
+resting bids/asks, walls appearing and disappearing as a large player
+works an order. That data does not exist for this window: Kraken's
+public `Depth` endpoint only ever returns the *current* live order book —
+confirmed by direct `curl` testing with two different `since` values, both
+of which silently ignored the parameter and returned the same live
+snapshot. There is no historical order-book endpoint anywhere in Kraken's
+public API. This was never captured 30 days ago and can't be
+reconstructed after the fact, so it can only ever support a live monitor,
+never a backtest.
+
+What Kraken's trade feed *does* carry historically is the real aggressor
+side of every individual trade. `extract_block_trades.py` pulls every
+single trade ≥ 1.0 BTC out of the raw 30-day, 1.93M-trade dump into
+`data/block_trades.csv` (9,401 of them; size distribution: p50 ≈ 0.001 BTC,
+p99.99 ≈ 8.4 BTC, max 39.5 BTC — so a 1-8 BTC single print is genuinely in
+the tail, not noise). `block_trade_mtf_backtest.py` reuses the 4H bias /
+15m external-internal structure / order-block skeleton unchanged, but
+replaces the order-flow signal with: **while price is trading at/inside
+the order-block zone, a single real trade ≥ `BLOCK_SIZE_THRESHOLD` BTC
+prints on the side that would defend the zone** (a large sell hitting a
+resistance OB for a SHORT, a large buy hitting a support OB for a LONG).
+That single print stands in for the old CHoCH/order-flow step; entry then
+still requires one more 1-minute close that rejects back out of the zone
+(confirmation), filling at the next bar's open. The same fake-out rule
+applies: a close through the *far* side of the zone before confirmation
+completes kills the setup.
+
+### Headline result (defaults: 4H bias 3%, 15m external 1.5%, 15m internal
+0.5%, block size 2.0 BTC, TP 2.0R)
+
+| Metric | Value |
+|---|---|
+| 15m legs evaluated | 80 |
+| 4H bias aligned / order block marked | 33 / 33 |
+| Internal structure counter-trend + OB touched | 31 |
+| Defending block trade + confirmation close | 2 |
+| **Traded** | **2** |
+| Fake-outs (closed through far side of OB) | 10 |
+| Win rate | 0.0% (0W-2L) |
+| Avg R-multiple | -1.00R |
+| Net P&L on $5,000 account | -$100.00 |
+
+A real ≥2 BTC single print landing inside an order block while price is
+still respecting it is, as expected, rarer than either a price-pivot CHoCH
+or an order-flow absorption/divergence bar — only 2 of 31 touches produce
+one. Both that fired were losers.
+
+### Threshold × block-size sweep (full 20-cell sweep in
+`results_block_trade_mtf.txt`)
+
+| Ext. thresh | Touched | Closed | W-L | Fake-out | Win rate | Net P&L |
+|---|---|---|---|---|---|---|
+| 1.0% | 60 | 3-8 | 0-2 / 1-6 | 7-27 | 0.0-25.0% | -$50 to -$200 |
+| 1.5% (default) | 31 | 1-3 | 0-1 / 1-2 | 4-16 | 0.0-33.3% | -$100 to $0 |
+| 2.0% | 18 | 1-2 | 0 / 1-2 | 2-11 | 0.0% | -$50 to -$100 |
+| 3.0% | 9 | 0-1 | 0 / 0-1 | 0-6 | 0.0% | $0 to -$50 |
+
+The single best cell across the whole sweep is 1.5% external / 1.0 BTC
+block size: 3 closed trades, 1 win, breakeven ($0 net) — and that's the
+*best* of 20 cells, on a 3-trade sample. Every other cell is flat-to-losing,
+and most have 0-2 closed trades — too thin to read as anything but noise.
+
+**Verdict: this is the most "real institutional footprint" signal tried
+in this README — an actual ≥1-8 BTC trade hitting the order block, tagged
+with Kraken's genuine aggressor side, not a derived indicator — and it is
+also the thinnest-firing and least conclusive.** Requiring a literal large
+trade to land inside the zone while the zone is still valid is a tight
+enough conjunction that it only fires 2-8 times per 30 days at sane
+thresholds, never enough trades in this window to distinguish a real edge
+from chance. Where it does have a sample (1.0-1.5% external threshold), it
+is flat to slightly negative, consistent with every order-block variant
+tried: the underlying finding isn't that "big players don't show up" — a
+real 2-8 BTC print absolutely does land in the zone sometimes — it's that
+even a confirmed defending block trade doesn't reliably stop this market
+from extending through the level afterward. The genuine ceiling here is
+data, not analysis: real order-book depth (showing the wall *before* it's
+hit, and whether it's being absorbed or pulled) would be a sharper test of
+the "big player" premise than any single trade print, but that data was
+never captured historically and Kraken's public API cannot provide it
+retroactively — only a live monitor could ever use it.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -703,6 +789,7 @@ than it reverses off it.
 | Trendline + Fibonacci confluence | 20-27% WR, -$65 to +$22 (n=15) at default | Yes (consistently net-negative or sub-$25 across 18 cells) |
 | Order block + MTF structure (4H bias/15m OB/1m CHoCH) | 0% WR, -$50 (n=1) at default; 37.5-50% WR, ~flat (n=8) loosened | Untestable at structural thresholds (0 trades at 2-3%); dominant finding is 82-100% fake-out rate on every OB touch |
 | Order-flow confirmed order block (absorption + CVD divergence) | 27.3% WR, -$100 (n=11) at default | Yes (0-33% WR, net-negative at every threshold and TP multiple) — fake-out rate drops to 61% but the market still extends through visible delta exhaustion most of the time |
+| Block-trade confirmed order block (real ≥1-8 BTC prints, real aggressor side) | 0% WR, -$100 (n=2) at default; best cell 33% WR, $0 (n=3) | Too thin to call robust — signal fires only 2-8 times per 30 days at any sane threshold; flat-to-negative wherever it has any sample |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
