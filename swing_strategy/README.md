@@ -604,6 +604,87 @@ zones, trendlines, and now order blocks) far more often than it cleanly
 respects it, so a strategy gated on "wait for the reversal to confirm"
 mostly just waits.
 
+## Variant: Order-flow confirmed order block (absorption + CVD divergence)
+
+`order_flow_mtf_backtest.py` keeps the 4H bias, 15-min external/internal
+structure, and order-block marking from the previous variant unchanged
+(those parts of the pipeline are pure structure, not the weak link) but
+throws out the mechanical 1-minute price-pivot CHoCH and replaces it with
+genuine order-flow evidence of institutional activity at the order block,
+read off Kraken's real buyer/seller aggressor tag (not a price-uptick
+proxy):
+
+- **Absorption** — a 1-min bar trading at the OB zone on ≥2x its trailing
+  20-bar average volume that still closes in the reversal direction (a
+  huge-volume bearish close right at resistance, or bullish close right at
+  support). Size came in, price didn't get away with it.
+- **CVD divergence** — a bar prints a fresh 10-bar local extreme into the
+  zone (a new high testing resistance, a new low testing support) but its
+  own delta fails to confirm — sellers (or buyers) are winning the bar
+  despite price pushing the "wrong" way for them. The push lacks real
+  volume behind it.
+
+Either signal, firing while price is actually trading at the zone, stands
+in for the old CHoCH step; the sequence then collapses to signal → a close
+that rejects back out of the zone (confirmation) → entry at the next bar's
+open. The same fake-out rule still applies: closing through the *far* side
+of the zone before confirmation kills the setup.
+
+### Headline result (same defaults: 4H bias 3%, 15m external 1.5%, 15m
+internal 0.5%, absorption 2.0x, TP 2.0R)
+
+| Metric | Value |
+|---|---|
+| 15m legs evaluated | 80 |
+| 4H bias aligned / order block marked | 33 / 33 |
+| Internal structure counter-trend + OB touched | 31 |
+| Order-flow signal + confirmation (absorption / divergence) | 11 (1 / 10) |
+| **Traded** | **11** |
+| Fake-outs (closed through far side of OB) | 19 (61% of touches) |
+| Win rate | 27.3% (3W-8L) |
+| Avg R-multiple | -0.18R |
+| Net P&L on $5,000 account | -$100.00 |
+
+This is a real improvement in *sample size and structural validity* over
+the price-pivot CHoCH variant — order-flow evidence at the zone is, by
+construction, far more common than a clean 1-minute swing-pivot break, so
+11 trades fire from the same 31 touches that only produced 1 before, and
+the fake-out rate drops from 87% to 61%. It is **not** an improvement in
+edge: win rate stays in the 0-33% band across every cell of the sweep, and
+every TP multiple tested at the default thresholds is net-negative
+(-$100 to -$350 from 1.0R to 3.0R; the 1.0-1.5R win rate ties 27.3% but
+still loses on R-multiple skew).
+
+### Threshold × absorption-multiplier sweep
+
+| Ext. thresh | Touched | Closed | W-L | Fake-out rate | Win rate | Net P&L |
+|---|---|---|---|---|---|---|
+| 1.0% | 60 | 22-23 | 5-6 / 17 | 60% | 22.7-26.1% | -$250 to -$350 |
+| 1.5% (default) | 31 | 11-12 | 3-4 / 8 | 61% | 27.3-33.3% | -$100 to $0 |
+| 2.0% | 18 | 6-7 | 0-1 / 6 | 61% | 0.0-14.3% | -$200 to -$300 |
+| 3.0% | 9 | 2 | 0 / 2 | 78% | 0.0% | -$100 |
+
+Full 16-cell sweep in `results_order_flow_mtf.txt`. The absorption-volume
+multiplier (1.5x-4.0x) barely moves any column at any threshold — almost
+every signal that fires is a CVD divergence, not a volume-absorption spike
+(10 of 11 at default), so this market's "big player" footprint in this
+dataset shows up far more often as a failed delta push than as a single
+outsized-volume candle.
+
+**Verdict: a structurally cleaner test of the "big player footprint"
+premise than mechanical CHoCH, and it does fire often enough to read (n=11
+at the realistic 1.5% threshold, n=22-23 loosened to 1.0%) — but it still
+loses money at every threshold and every TP multiple tried.** The fake-out
+rate falling from 87% to 61% confirms order-flow evidence is a genuinely
+less-rare event than a price-pivot CHoCH, but "less rare" isn't "correct":
+even when a fresh push into the order-block zone visibly lacks confirming
+delta, this BTCUSD series still continues through the zone roughly 6 times
+in 10. Real buyer/seller order-flow data narrows the funnel without fixing
+the underlying finding repeated across every variant in this README: this
+market extends through technical structure - swing points, Fib zones,
+trendlines, order blocks, and now visible delta exhaustion - more often
+than it reverses off it.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -621,6 +702,7 @@ mostly just waits.
 | Gravity-field price-magnet | 28.6% WR, -$234 (n=15) at default, real sample | Yes (3-29 trades/cell across the sweep, almost all net-negative) |
 | Trendline + Fibonacci confluence | 20-27% WR, -$65 to +$22 (n=15) at default | Yes (consistently net-negative or sub-$25 across 18 cells) |
 | Order block + MTF structure (4H bias/15m OB/1m CHoCH) | 0% WR, -$50 (n=1) at default; 37.5-50% WR, ~flat (n=8) loosened | Untestable at structural thresholds (0 trades at 2-3%); dominant finding is 82-100% fake-out rate on every OB touch |
+| Order-flow confirmed order block (absorption + CVD divergence) | 27.3% WR, -$100 (n=11) at default | Yes (0-33% WR, net-negative at every threshold and TP multiple) — fake-out rate drops to 61% but the market still extends through visible delta exhaustion most of the time |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
