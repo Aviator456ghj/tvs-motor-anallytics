@@ -159,6 +159,57 @@ legs "never broke out" in the confirmed sense), so even pooled across every
 threshold this is ~20 trades total — directionally robust, not yet a large
 enough sample to call statistically proven. See `results_breakout_continuation_v2.txt`.
 
+### Stress-testing the one variant that actually works
+
+"Positive at every threshold over the full 2-year sample" is a different,
+weaker claim than "will keep working" — it's still one continuous price
+history, so a good run concentrated in six months could make every
+threshold look good without the edge being present throughout time.
+`breakout_v2_robustness_study.py` runs two honesty checks on v2 rather than
+trying a 17th mean-reversion variant chasing the same dead end almost
+everything else in this README already hit:
+
+**1. Walk-forward split** — find pivots and run trades independently in
+the first vs. second half of the 2-year window (split at 2025-08-15), same
+61.8%/161.8% production parameters, across the same threshold sweep:
+
+| Thresh | First half (404d) | Second half (317d) |
+|---|---|---|
+| 5% | 1W-1L, +$20.91 | 2W-3L, +$67.43 |
+| 6% | 3W-1L, +$240.93 | 0W-3L, -$150.00 |
+| 8% | 1W-0L, +$99.32 | 0W-1L, -$50.00 |
+| 10% | 0W-1L, -$50.00 | 1W-0L, +$95.88 |
+
+This is the real finding: **6%, 8%, and 10% all flip sign between halves**
+— their full-period "positive" result was each carried by one half of the
+data, not present throughout. Only **5%** is net-positive in *both*
+halves (the combined 7 trades reproduce the full-period 42.9%/+$88 result
+exactly, split 2/7 in the first half and 5/7 in the second) — and even
+that's on 2 and 5 trades respectively, too thin to call proven, just the
+only configuration that didn't fail this specific check.
+
+**2. Daily HA-bias filter** — layer the bias used in the EMA-band variant
+above (yesterday's Heikin-Ashi color) on top of v2's entries, keeping only
+trades where the breakout direction agrees with it: at every threshold,
+the "bias-OK" row is **identical** to "unfiltered" — same legs, same
+win/loss, same P&L, to the cent. Every v2 breakout already agrees with the
+prior day's HA color; the filter discriminates nothing. This makes sense
+in hindsight — a confirmed zig-zag breakout in one direction is itself
+downstream of the same trend that colors yesterday's HA candle, so the
+bias filter carries no information v2's own entry condition didn't already
+have.
+
+**Revised verdict: don't treat "positive at every threshold" as "robust
+across time" without checking — it wasn't, for 3 of 4 thresholds.** The 5%
+threshold is the one configuration in 16 variants and dozens of cells
+tried across this whole README that's positive in both an aggregate sweep
+*and* an honest split-half test, which makes it the most defensible
+candidate for live capital here — but "most defensible in this dataset"
+is still a 7-trade sample over 2 years (roughly 1 signal every ~10 weeks),
+not a strategy that "works every time." Treat early live trades as data
+that either confirms or kills this, not as confirmation already in hand.
+Full sweep + both checks in `results_breakout_v2_robustness.txt`.
+
 ## Variant: Cycle (sine-wave) analysis
 
 `cycle_sine_backtest.py` is a different family of method entirely - no zig-zag
@@ -858,7 +909,7 @@ particular strategy has edge (it doesn't, here).
 | Original Fibonacci retracement | 24.5% WR, -$837 | Yes (consistently net-negative) |
 | Trend-filtered (50/200 SMA) | 11-25% WR, -$200 to -$636 | Yes (consistently worse or flat) |
 | Breakout-continuation v1 | 71.4% WR, +$118 (n=7) | **No** — cherry-picked single threshold |
-| Breakout-continuation v2 | 42.9-50% WR, +$46 to +$91 | **Yes** — positive at every threshold with real sample, but total n is thin (~20 trades pooled) |
+| Breakout-continuation v2 | 42.9-50% WR, +$46 to +$91 | **Partial** — positive at every threshold over the full period, but a walk-forward split shows 3 of 4 thresholds flip sign between halves; only 5% holds up in both halves (n=7 total) |
 | CVD divergence (real + proxy) | 0% WR, -$100 (n=2 each) | Sample too small to judge |
 | Cycle (sine-wave) | 80-83% WR, +$18 to +$48 (n=5-6) | **No** - sign flips with TP multiple, period hugs scan boundary |
 | Quantum Wave Matrix (QWM), 5-min/30d | 0 trades at every swept threshold | Untestable — thresholds never co-occur on 30d of 5-min data |
@@ -878,3 +929,13 @@ proof of a durable edge — the absolute sample size is still small for a
 2-year window — but it's a structurally sound design (tight, volatility-scaled
 stop; reward sized larger than risk) where v1 was not. See
 `CVD_STRATEGY_COMPARISON.md` for the CVD-specific writeup.
+
+A later walk-forward check (see the "Stress-testing" subsection above)
+found that claim was real but narrower than it first looked: 6%, 8%, and
+10% thresholds each owe their full-period profit to one half of the
+2-year window, not both — only the 5% threshold is net-positive in an
+honest first-half/second-half split, on a 7-trade sample. No system in
+this README "works every time"; if one configuration here is going to be
+run live, 5% is the one with the least circumstantial evidence behind it,
+and it should still be sized and judged on real trades going forward, not
+on the backtest alone.
