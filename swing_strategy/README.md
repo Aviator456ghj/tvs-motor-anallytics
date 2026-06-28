@@ -529,6 +529,81 @@ analysis: this market extends past swing points more often than it
 retraces cleanly back through a Fib zone, regardless of which trend
 filter is bolted onto the entry.
 
+## Variant: Order block + multi-timeframe structure (4H bias + 15m structure/OB + 1m CHoCH)
+
+`order_block_mtf_backtest.py` implements the ICT/smart-money-concepts entry
+sequence end-to-end across three timeframes, all built from the *same*
+30-day raw trade dump (`build_mtf_bars.py` aggregates Kraken's trade-by-trade
+feed into aligned 1-min/15-min/4h bars, since Kraken's OHLC endpoint caps out
+at 720 candles per interval — nowhere near enough history at 1-minute
+resolution):
+
+1. **4H bias** — bullish only once the structure prints a confirmed Higher
+   High *and* Higher Low back to back; bearish only on a confirmed Lower
+   High *and* Lower Low. A lone new extreme doesn't flip it.
+2. **15-min external structure** — the latest two confirmed swing pivots
+   define the tradeable leg; a SHORT requires that leg to run high→low
+   *and* the 4H bias at that moment to be BEARISH (mirror image for LONG).
+3. **Order block** — scanning backward from the leg's swing extreme to its
+   origin, the last opposite-colour 15-min candle before the impulsive move
+   is marked as the OB zone.
+4. **Internal structure** — 15-min price is re-zig-zagged with a smaller
+   threshold from the swing extreme forward; the setup stays alive only
+   once that internal structure is currently running counter to the leg
+   (an internal rally inside a down-leg, or dip inside an up-leg) *and*
+   price actually trades back into the OB zone.
+5. **1-min CHoCH → pullback → confirmation** — once the OB is touched, drop
+   to 1-minute bars and wait for a close back through the most recent
+   internal 1-min swing point (the change of character), then a pullback
+   that re-touches the OB, then a close that rejects back out of it. Entry
+   fills at the next 1-min bar's open.
+6. **Fake-out detection** — at any point before that sequence completes, a
+   close all the way through the *far side* of the OB zone kills the setup
+   as a `FAKEOUT` instead of letting it ride to a phantom entry.
+
+### Headline result (default: 4H bias 3%, 15m external 1.5%, 15m internal
+0.5%, 1m CHoCH 0.15%, TP 2.0R)
+
+| Metric | Value |
+|---|---|
+| 15m legs evaluated | 80 |
+| 4H bias aligned with leg direction | 33 |
+| Order block marked | 33 |
+| Internal structure counter-trend + OB touched | 31 |
+| 1m CHoCH confirmed | 1 |
+| Pullback into OB confirmed | 1 |
+| **Traded** | **1** |
+| **Fake-outs (closed through far side of OB)** | **27 (87% of touches)** |
+| Win rate | 0.0% (0W-1L) |
+| Net P&L on $5,000 account | -$50.00 |
+
+### Threshold sweep (15m external × TP R-multiple, full 16-cell table in
+`results_order_block_mtf.txt`)
+
+| Ext. thresh | TP R | Legs | OB touched | Closed | W | L | Fakeouts | Win rate | Net P&L |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.0% | 1.0–3.0 | 174 | 60 | 8 | 3-4 | 4-5 | 49 (82%) | 37.5-50.0% | $0 to +$200 |
+| 1.5% (default) | 1.0–3.0 | 80 | 31 | 1 | 0 | 1 | 27 (87%) | 0.0% | -$50 (flat) |
+| 2.0% | 1.0–3.0 | 46 | 18 | 0 | 0 | 0 | 17 (94%) | n/a | $0 |
+| 3.0% | 1.0–3.0 | 22 | 9 | 0 | 0 | 0 | 9 (100%) | n/a | $0 |
+
+**This is essentially untestable at the structural thresholds the strategy
+description actually calls for, and the one thing that *is* measurable
+everywhere is damning for the setup's core premise.** At the default 1.5%
+external threshold only 1 of 80 legs ever survives the full bias→OB→CHoCH→
+pullback chain to a real entry; loosen to 1.0% and the sample grows to a
+still-thin 8 trades with a coin-flip-ish 37.5-50% win rate that's roughly
+flat-to-slightly-positive after costs; tighten to 2.0% or 3.0% (closer to
+genuine swing-structure thresholds) and **zero trades ever complete** despite
+9-18 order-block touches at each setting. Across every threshold, **82-100%
+of all order-block touches end in FAKEOUT** — price closing straight through
+the far side of the zone rather than respecting it and reversing. That's the
+same finding this repo keeps surfacing in every swing/Fib/trendline variant
+above: this BTCUSD series extends through structure (swing points, Fib
+zones, trendlines, and now order blocks) far more often than it cleanly
+respects it, so a strategy gated on "wait for the reversal to confirm"
+mostly just waits.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -545,6 +620,7 @@ filter is bolted onto the entry.
 | Phase-rotation cycle (time-delay embedding) | 0 trades at default; -$1 to -$200 once coherence loosened | Yes (consistently thin-sample and net-negative once it can fire) |
 | Gravity-field price-magnet | 28.6% WR, -$234 (n=15) at default, real sample | Yes (3-29 trades/cell across the sweep, almost all net-negative) |
 | Trendline + Fibonacci confluence | 20-27% WR, -$65 to +$22 (n=15) at default | Yes (consistently net-negative or sub-$25 across 18 cells) |
+| Order block + MTF structure (4H bias/15m OB/1m CHoCH) | 0% WR, -$50 (n=1) at default; 37.5-50% WR, ~flat (n=8) loosened | Untestable at structural thresholds (0 trades at 2-3%); dominant finding is 82-100% fake-out rate on every OB touch |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
