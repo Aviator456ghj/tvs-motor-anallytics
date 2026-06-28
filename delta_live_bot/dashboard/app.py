@@ -85,6 +85,8 @@ def api_status():
     return jsonify({
         "status": status,
         "last_handled_leg_key": state.get("last_handled_leg_key"),
+        "last_handled_leg_key_v2": state.get("last_handled_leg_key_v2"),
+        "last_handled_cycle_key": state.get("last_handled_cycle_key"),
         "service_state": service_state(),
         # Sourced from status.json (written by bot.py's own process on its last
         # pass), not this dashboard process's own config import - the dashboard

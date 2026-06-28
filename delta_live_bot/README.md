@@ -1,16 +1,34 @@
-# Delta Live Bot — v1 Breakout-Continuation, automated
+# Delta Live Bot — v1 + v2 Breakout-Continuation, Cycle Sine-Wave
 
-Live monitoring + execution agent for the **v1 breakout-continuation**
-ruleset from `swing_strategy/breakout_continuation_backtest.py`
-(71.4% WR, +$118, n=7 at 8% zig-zag threshold). This is the exact v1 math,
-not the v2 redesign — deployed as-is per explicit choice, despite v1 not
-surviving a threshold sweep robustly (see `swing_strategy/README.md`,
-"v1 root cause and the v2 redesign"). Know that going in: this is trading
-real money on a single historically-favorable sample, not a proven edge.
+Live monitoring + execution agent running **three independent strategies
+concurrently** against the same BTCUSD daily candle feed:
+
+| Strategy | Source backtest | Entry | SL / TP |
+|---|---|---|---|
+| v1 breakout-continuation | `swing_strategy/breakout_continuation_backtest.py` | wick touch of breakout level | leg origin ±2% / 100% measured move |
+| v2 breakout-continuation | `swing_strategy/breakout_continuation_v2_backtest.py` | close beyond breakout level, fills next bar's open | breakout level retraced 61.8% of leg range / 161.8% extension |
+| Cycle sine-wave | `swing_strategy/cycle_sine_backtest.py` | periodogram-fit derivative trough/crest + momentum confirm, fills next bar's open | structural swing-lookback stop / ±1x fitted amplitude |
+
+**Robustness caveats, carried forward honestly from `swing_strategy/README.md`:**
+v1 is deployed as the exact math the user explicitly chose, despite not
+surviving a zig-zag threshold sweep robustly (71.4% WR, +$118, n=7 is a
+thin, cherry-picked-looking sample) — see "v1 root cause and the v2
+redesign" in that README. v2 is the only one of the eleven logics tested
+across this whole project that stays net-positive across its own parameter
+sweep, i.e. the most defensible of the three. Cycle sine-wave flips sign
+depending on the TP amplitude multiple and its fitted dominant period
+tends to hug the scan's upper boundary — treat it as the weakest of the
+three, kept live mainly because the user explicitly asked for all three.
+None of this is a guarantee: this bot risks real money on strategies with
+mixed historical robustness, not a proven edge.
 
 Trades BTCUSD perpetual futures on Delta Exchange India, on daily candles,
 sizing each position at 1% of account balance risked between entry and
-stop — same convention as the backtest.
+stop — same convention as the backtests. If more than one strategy
+triggers in the same pass, each re-fetches the live wallet balance before
+sizing, so a balance already drawn down by an earlier trigger in that same
+pass naturally caps how big the next trigger's position can be — there is
+no extra cross-strategy risk cap beyond that.
 
 ## Files
 
@@ -21,12 +39,20 @@ stop — same convention as the backtest.
   wallet-balance call, and products call actually work on your account.
   Don't trust the hardcoded `CANDLE_PATHS` list — trust what this reports.
 - `strategy.py` — zig-zag pivot detection (ported from
-  `measured_swing_backtest.py::find_pivots`) and breakout trigger logic,
+  `measured_swing_backtest.py::find_pivots`) and v1 breakout trigger logic,
   anchored off the last fully *confirmed* leg (`pivots[-3]`/`pivots[-2]`),
   never the provisional running extreme at `pivots[-1]`.
-- `bot.py` — orchestration: fetch candles -> evaluate breakout -> size
-  off live balance -> place bracket order (or log dry-run) -> persist
-  which leg was acted on so it never fires twice.
+- `strategy_v2.py` — reuses `strategy.py`'s pivot detector; v2's
+  close-confirmed breakout trigger logic, same anchor.
+- `strategy_cycle.py` — periodogram fit / derivative turning-point logic
+  ported from `cycle_sine_backtest.py`, duplicated rather than imported
+  (same reasoning as `strategy.py` duplicating `find_pivots`: no
+  cross-package relative-path dependency). Not pivot-anchored — idempotency
+  is keyed off the confirming bar's date + direction instead of a leg key.
+- `bot.py` — orchestration: fetch candles -> evaluate all three strategies
+  independently -> for each new trigger, size off a freshly-fetched live
+  balance -> place bracket order (or log dry-run) -> persist which
+  leg/signal was acted on (one key per strategy) so none ever fires twice.
 
 ## Setup
 
@@ -75,10 +101,11 @@ dashboard below reads.
 ## Monitoring dashboard
 
 `dashboard/app.py` is a small Flask app showing the current trading mode,
-service state, the leg it's currently watching, the most recent trigger,
-and wallet balance (fetched on demand). It can start/stop/restart the
-`delta-bot.service` unit, but it never touches `.env` or the `DRY_RUN`/
-`LIVE_TRADING_CONFIRM` gates — those stay a deliberate, SSH-only edit.
+service state, what each of the three strategies is currently watching,
+each strategy's most recent trigger, and wallet balance (fetched on
+demand). It can start/stop/restart the `delta-bot.service` unit, but it
+never touches `.env` or the `DRY_RUN`/`LIVE_TRADING_CONFIRM` gates — those
+stay a deliberate, SSH-only edit.
 
 ```
 sudo cp deploy/delta-dashboard.service /etc/systemd/system/
@@ -101,15 +128,18 @@ Let's Encrypt) rather than exposing Flask's dev server raw.
 
 ## Adding more strategies later
 
-Right now `strategy.py`/`bot.py` hardcode the one breakout-continuation
-ruleset. `swing_strategy/` already has several other backtested
-candidates (`breakout_continuation_v2_backtest.py`, `cvd_divergence_backtest.py`,
-`measured_swing_backtest.py`, `trend_filtered_backtest.py`) that aren't
-wired into live trading yet. `status.json`'s schema (`symbol`, `watching`,
-`last_trigger`) and the dashboard's card layout were kept generic enough
-that adding a second live strategy mostly means: a second `STATUS_FILE`/
-state file pair, a second systemd unit, and another card on the dashboard
-reading that strategy's status file — not a rewrite.
+`bot_state.json` and `status.json` use one key per strategy
+(`last_handled_leg_key`/`watching`/`last_trigger` for v1,
+the `_v2` and `_cycle` suffixed equivalents for the other two — see
+`bot.py`'s `LEG_KEY_FIELD`/`STATE_FIELD`/`TRIGGER_STATUS_FIELD` lookup
+tables). `swing_strategy/` still has other backtested candidates
+(`cvd_divergence_backtest.py`, `measured_swing_backtest.py`,
+`trend_filtered_backtest.py`, `gravity_field_backtest.py`,
+`phase_rotation_backtest.py`) not wired into live trading. Adding one more
+means: a new `strategy_<name>.py` with an `evaluate_latest_*()` /
+`current_watch_*()` pair, a new entry in those three lookup tables and in
+`run_once()`'s `watches`/`setups` dicts, and a new pair of dashboard cards
+— not a rewrite of the loop itself.
 
 ## Known gaps / things to verify empirically, not assume
 

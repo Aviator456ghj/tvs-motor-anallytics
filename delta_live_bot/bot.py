@@ -1,11 +1,19 @@
 """
-Main loop for the live v1 breakout-continuation bot.
+Main loop for the live multi-strategy bot.
 
-Each pass: pull daily BTCUSD candles from Delta -> run the same pivot /
-breakout logic as the backtest -> if a not-yet-handled confirmed leg has
-broken out, size a position off live wallet balance and place a real
-bracket order (only if config.live_orders_enabled()), else log a DRY RUN
-line. The handled leg's key is persisted so the same leg never fires twice.
+Each pass: pull daily BTCUSD candles from Delta, then independently
+evaluate three strategies -
+  v1    breakout-continuation, wick-touch entry (already deployed)
+  v2    breakout-continuation, close-confirmed entry, tighter SL, extended TP
+  cycle sine-wave turning-point signal
+Any strategy whose latest signal hasn't already been handled sizes a
+position off a freshly-fetched live wallet balance and places a real
+bracket order (only if config.live_orders_enabled()), else logs a DRY RUN
+line. Each strategy's handled-signal key is persisted independently so the
+same setup never fires twice, and multiple strategies can trigger in the
+same pass - each one re-fetches live balance before sizing, which
+naturally reflects margin already committed by an earlier trigger in the
+same pass.
 
 Run modes:
     python3 bot.py            single pass, then exit (cron-friendly)
@@ -28,16 +36,29 @@ from config import (
 )
 from delta_client import DeltaClient
 from strategy import evaluate_latest_leg, current_watch
+from strategy_v2 import evaluate_latest_leg_v2, current_watch_v2
+from strategy_cycle import evaluate_latest_cycle_signal, current_watch_cycle
 
-LOOKBACK_DAYS = 400  # enough daily bars for ZIGZAG_THRESHOLD=8% pivots to form
+LOOKBACK_DAYS = 400  # covers ZIGZAG_THRESHOLD=8% pivots and the ~230d cycle fit window
 LIVE_TRADING_CONFIRMED = LIVE_TRADING_CONFIRM == "I_UNDERSTAND_THE_RISK"
+
+# Per-strategy lookup tables: which key in the trigger setup dict identifies
+# the signal, which key in persisted state remembers the last one handled,
+# and which key in status.json the dashboard reads it back from.
+LEG_KEY_FIELD = {"v1": "leg_key", "v2": "leg_key", "cycle": "cycle_key"}
+STATE_FIELD = {"v1": "last_handled_leg_key", "v2": "last_handled_leg_key_v2", "cycle": "last_handled_cycle_key"}
+TRIGGER_STATUS_FIELD = {"v1": "last_trigger", "v2": "last_trigger_v2", "cycle": "last_trigger_cycle"}
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
-            return json.load(f)
-    return {"last_handled_leg_key": None}
+            state = json.load(f)
+    else:
+        state = {}
+    for key in STATE_FIELD.values():
+        state.setdefault(key, None)
+    return state
 
 
 def save_state(state):
@@ -54,7 +75,7 @@ def load_status():
 
 def save_status(**fields):
     """Merges `fields` into the persisted status snapshot rather than
-    replacing it wholesale, so `last_trigger` survives the many passes in
+    replacing it wholesale, so `last_trigger*` survives the many passes in
     between that find nothing new - the dashboard needs to keep showing the
     most recent trigger, not just whatever happened on the last pass."""
     status = load_status()
@@ -138,78 +159,90 @@ def watch_summary(watch):
     }
 
 
+def watch_summary_cycle(watch):
+    return watch  # already a flat, JSON-safe display dict (period/amplitude/derivative/date)
+
+
 def run_once(client):
     bars = fetch_daily_bars(client, PRODUCT_SYMBOL)
     state = load_state()
     last_bar = {"date": bars[-1]["date"], "close": bars[-1]["close"]}
-    watch = current_watch(bars)
 
-    setup = evaluate_latest_leg(bars, state.get("last_handled_leg_key"))
-    if setup is None:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] no new triggered breakout. "
+    watches = {
+        "v1": watch_summary(current_watch(bars)),
+        "v2": watch_summary(current_watch_v2(bars)),
+        "cycle": watch_summary_cycle(current_watch_cycle(bars)),
+    }
+    setups = {
+        "v1": evaluate_latest_leg(bars, state.get("last_handled_leg_key")),
+        "v2": evaluate_latest_leg_v2(bars, state.get("last_handled_leg_key_v2")),
+        "cycle": evaluate_latest_cycle_signal(bars, state.get("last_handled_cycle_key")),
+    }
+    triggers = [(label, setup) for label, setup in setups.items() if setup is not None]
+
+    status_fields = dict(
+        symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
+        last_bar=last_bar, watching=watches["v1"], watching_v2=watches["v2"], watching_cycle=watches["cycle"],
+    )
+
+    if not triggers:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] no new triggers from any strategy. "
               f"last bar: {bars[-1]['date']} close={bars[-1]['close']}")
-        save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
-                    last_bar=last_bar, watching=watch_summary(watch),
-                    last_pass_message="no new triggered breakout")
+        save_status(**status_fields, last_pass_message="no new triggers from any strategy")
         return
-
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] TRIGGER: {setup['direction']} {PRODUCT_SYMBOL} "
-          f"breakout={setup['breakout_level']:.2f} sl={setup['sl']:.2f} tp={setup['tp']:.2f} "
-          f"triggered on {setup['triggered_date']}")
 
     product = client.get_product(PRODUCT_SYMBOL)
     if product is None:
-        print(f"ABORT: could not find product spec for {PRODUCT_SYMBOL}, not sizing or placing an order.")
-        save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
-                    last_bar=last_bar, watching=watch_summary(watch),
-                    last_pass_message=f"ABORT: no product spec for {PRODUCT_SYMBOL}")
+        print(f"ABORT: could not find product spec for {PRODUCT_SYMBOL}, not sizing or placing any order.")
+        save_status(**status_fields, last_pass_message=f"ABORT: no product spec for {PRODUCT_SYMBOL}")
         return
 
-    balance = get_usd_balance(client)
-    contracts, risk_amount, notional_usd = size_position(
-        client, product, setup["breakout_level"], setup["sl"], balance
-    )
-    print(f"balance=${balance:,.2f} risk=${risk_amount:,.2f} notional=${notional_usd:,.2f} "
-          f"-> {contracts} contract(s)")
+    messages = []
+    for label, trig in triggers:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] TRIGGER [{label}]: {trig['direction']} {PRODUCT_SYMBOL} "
+              f"sl={trig['sl']:.2f} tp={trig['tp']:.2f} triggered on {trig.get('triggered_date')}")
 
-    side = "buy" if setup["direction"] == "LONG" else "sell"
+        entry_ref = trig.get("entry_price", trig.get("breakout_level"))
+        balance = get_usd_balance(client)
+        contracts, risk_amount, notional_usd = size_position(client, product, entry_ref, trig["sl"], balance)
+        print(f"[{label}] balance=${balance:,.2f} risk=${risk_amount:,.2f} notional=${notional_usd:,.2f} "
+              f"-> {contracts} contract(s)")
 
-    last_trigger = {
-        "triggered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "direction": setup["direction"], "triggered_date": setup["triggered_date"],
-        "breakout_level": round(setup["breakout_level"], 2), "sl": round(setup["sl"], 2),
-        "tp": round(setup["tp"], 2), "contracts": contracts,
-        "risk_amount": round(risk_amount, 2), "notional_usd": round(notional_usd, 2),
-        "balance": round(balance, 2), "dry_run": DRY_RUN,
-    }
+        side = "buy" if trig["direction"] == "LONG" else "sell"
+        last_trigger = {
+            "strategy": label,
+            "triggered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "direction": trig["direction"], "triggered_date": trig.get("triggered_date"),
+            "entry_ref": round(entry_ref, 2), "sl": round(trig["sl"], 2), "tp": round(trig["tp"], 2),
+            "contracts": contracts, "risk_amount": round(risk_amount, 2),
+            "notional_usd": round(notional_usd, 2), "balance": round(balance, 2), "dry_run": DRY_RUN,
+        }
 
-    if live_orders_enabled():
-        resp = client.place_order(
-            product_id=product["id"], side=side, size=contracts, order_type="market_order",
-            bracket_stop_loss_price=round(setup["sl"], 2),
-            bracket_take_profit_price=round(setup["tp"], 2),
-        )
-        print(f"LIVE ORDER placed: {resp.status_code} {resp.text[:500]}")
-        last_trigger["order_status_code"] = resp.status_code
-        if resp.status_code not in (200, 201):
-            print("Order placement failed, NOT marking this leg as handled - will retry next pass.")
-            last_trigger["outcome"] = "order_failed_will_retry"
-            save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
-                        last_bar=last_bar, watching=watch_summary(watch), last_trigger=last_trigger,
-                        last_pass_message="order placement failed, will retry")
-            return
-        last_trigger["outcome"] = "live_order_placed"
-    else:
-        print(f"[DRY RUN] (DRY_RUN={DRY_RUN}) would place {side} {contracts} contracts of "
-              f"{PRODUCT_SYMBOL} with SL={setup['sl']:.2f} TP={setup['tp']:.2f}. "
-              f"Set DRY_RUN=false and LIVE_TRADING_CONFIRM=I_UNDERSTAND_THE_RISK to go live.")
-        last_trigger["outcome"] = "dry_run_only"
+        if live_orders_enabled():
+            resp = client.place_order(
+                product_id=product["id"], side=side, size=contracts, order_type="market_order",
+                bracket_stop_loss_price=round(trig["sl"], 2), bracket_take_profit_price=round(trig["tp"], 2),
+            )
+            print(f"[{label}] LIVE ORDER placed: {resp.status_code} {resp.text[:500]}")
+            last_trigger["order_status_code"] = resp.status_code
+            if resp.status_code not in (200, 201):
+                print(f"[{label}] Order placement failed, NOT marking this signal as handled - will retry next pass.")
+                last_trigger["outcome"] = "order_failed_will_retry"
+            else:
+                last_trigger["outcome"] = "live_order_placed"
+        else:
+            print(f"[DRY RUN][{label}] (DRY_RUN={DRY_RUN}) would place {side} {contracts} contracts of "
+                  f"{PRODUCT_SYMBOL} with SL={trig['sl']:.2f} TP={trig['tp']:.2f}. "
+                  f"Set DRY_RUN=false and LIVE_TRADING_CONFIRM=I_UNDERSTAND_THE_RISK to go live.")
+            last_trigger["outcome"] = "dry_run_only"
 
-    state["last_handled_leg_key"] = setup["leg_key"]
+        status_fields[TRIGGER_STATUS_FIELD[label]] = last_trigger
+        if last_trigger["outcome"] != "order_failed_will_retry":
+            state[STATE_FIELD[label]] = trig[LEG_KEY_FIELD[label]]
+        messages.append(f"{label}: {trig['direction']} ({last_trigger['outcome']})")
+
     save_state(state)
-    save_status(symbol=PRODUCT_SYMBOL, dry_run=DRY_RUN, live_trading_confirmed=LIVE_TRADING_CONFIRMED,
-                last_bar=last_bar, watching=watch_summary(watch), last_trigger=last_trigger,
-                last_pass_message=f"TRIGGER handled: {setup['direction']} ({last_trigger['outcome']})")
+    save_status(**status_fields, last_pass_message="; ".join(messages))
 
 
 def main():
