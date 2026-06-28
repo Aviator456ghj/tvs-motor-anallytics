@@ -431,6 +431,46 @@ a trade does fire) but the signal itself has no edge on this data — same
 conclusion as every other cycle-based variant in this repo, arrived at via
 a genuinely different mathematical route.
 
+## Variant: Gravity-field price-magnet model
+
+`gravity_field_backtest.py` answers a different question than the cycle
+variants: not "when does price turn" but "what pulls and pushes it toward
+zones it has occupied before." Every historical daily close is treated as
+one unit of mass on the log-price axis - levels visited often (support/
+resistance, congestion, value areas) accumulate more mass than levels
+price blew straight through. This maps directly onto 1-D gravity: in one
+dimension a point mass's potential is *logarithmic*, `U(x) = -G*m*ln|x|`,
+so its force is `F(x) = -dU/dx = G*m/x` - an inverse-*distance* pull, not
+the inverse-square of 3-D gravity. Summing that 1/distance pull from every
+historical price level (built only from data strictly before today, no
+lookahead) to today's price gives one signed number: net gravitational
+pull. The take-profit is the model's literal prediction of "where in the
+future" - it walks outward from today's price in the force's direction
+until it hits the next prominent peak in the smoothed historical-density
+curve, i.e. the next zone the model expects price to be pulled back to.
+
+**Result: this is the first variant in this repo to fire a real,
+non-trivial sample without any threshold-loosening.** At the documented
+default settings (180-day lookback, 2% log-price bins, 1.0-sigma force
+threshold) it produces **15 trades**: 4 wins, 10 losses, 1 still open,
+28.6% win rate, -0.33R average, net **-$233.78** on the $5,000 account.
+The 36-cell sweep (Z-threshold × lookback × bin width) in
+`results_gravity_field.txt` tells a consistent story - sample sizes range
+3-29 trades per cell, win rates run 0-44%, and all but a handful of
+thin-sample cells (n=3-9) are net-negative; the few positive cells
+(+$29 to +$31) are themselves too small to read as edge.
+
+**Honest verdict**: the physics is sound and the historical-density
+"magnet" zones are real (price genuinely does revisit high-density
+congestion areas more often than low-density ones, which is exactly what
+volume/market-profile traders already exploit) - but knowing price will
+likely *visit* a historical magnet zone again says nothing about whether
+it will do so by going up or down from here in a way that's net profitable
+once a stop-loss is in the mix, and that's exactly what 28.6% WR /
+net-negative means: the directional read off the force sign isn't reliable
+enough to beat the cost of the stop, even though the destination prediction
+itself is a real, defensible piece of market structure.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -445,6 +485,7 @@ a genuinely different mathematical route.
 | Quantum Wave Matrix (QWM), daily/2yr | 0 trades at literal thresholds; net-negative when loosened | Yes (consistently a loser once it can fire at all) |
 | Trident System (30-min FVG/Doji) | 0 trades at every swept threshold | Untestable — the FVG precondition itself almost never occurs on 24/7 crypto candles |
 | Phase-rotation cycle (time-delay embedding) | 0 trades at default; -$1 to -$200 once coherence loosened | Yes (consistently thin-sample and net-negative once it can fire) |
+| Gravity-field price-magnet | 28.6% WR, -$234 (n=15) at default, real sample | Yes (3-29 trades/cell across the sweep, almost all net-negative) |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
