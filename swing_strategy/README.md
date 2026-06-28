@@ -392,6 +392,45 @@ markets — only as confirmation that the pattern-matching/EMA/risk math
 itself runs correctly and produces sane (if zero) output when it has no
 qualifying setups to act on.
 
+## Variant: Phase-rotation cycle (time-delay embedding)
+
+`phase_rotation_backtest.py` is a different mathematical construction from
+the other cycle variant, not a re-test of an external playbook: it chains
+the same trig/calculus tools end to end rather than using a derivative
+check. (1) **Forward fit** — same periodogram sin/cos fit as
+`cycle_sine_backtest.py` finds the dominant cycle length T* and amplitude.
+(2) **Phase-portrait embedding** — builds a 2-D vector from the z-scored
+detrended price and its own value one quarter-cycle (T*/4) earlier (a
+standard time-delay/Takens embedding); a true sinusoid traces a circle in
+this plane. (3) **Inverse trig** — the signed rotation angle between
+consecutive phase vectors is `atan2(cross, dot)`, the literal inverse of
+the forward sin/cos pair. (4) **Integration** — cumulative phase
+`Theta(t) = Theta(t-1) + angle_step(t)` is the discrete integral of that
+angular velocity, tracked continuously start to end regardless of trade
+state. (5) **Forward projection** — `cos(Theta(t))` near -1/+1 flags a
+phase-portrait trough/crest (LONG/SHORT), and the take-profit projects the
+next extreme half a cycle ahead via `cos(Theta + pi) = -cos(Theta)`. A
+coherence filter (the last 5 rotation steps must share a sign) gates every
+entry so a single noisy tick isn't trusted as a real turn.
+
+**Result: zero trades at the default settings.** The dominant cycle this
+fit finds on 2 years of daily BTC is long (median 54 days, range 26-60),
+so each day's rotation step is small; daily price noise flips the angle's
+sign before 5 consecutive coherent steps ever accumulate, and the
+coherence filter (by design) blocks the entry. The 27-cell sweep
+(lag fraction × band threshold × coherence-bar count) in
+`results_phase_rotation.txt` confirms this isn't a one-off: relaxing
+coherence to 3 bars does let trades through (0-10 per cell), but the
+results are thin-sample and mostly net-negative (-$1 to -$200 across most
+cells); the handful of "100% win rate" cells are n=1 artifacts, not edge.
+
+**Honest verdict**: the math chain is internally consistent (the angle
+extraction and integration behave exactly as the trig identities predict,
+and the projected TP correctly lands on the cycle's opposite extreme when
+a trade does fire) but the signal itself has no edge on this data — same
+conclusion as every other cycle-based variant in this repo, arrived at via
+a genuinely different mathematical route.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -405,6 +444,7 @@ qualifying setups to act on.
 | Quantum Wave Matrix (QWM), 5-min/30d | 0 trades at every swept threshold | Untestable — thresholds never co-occur on 30d of 5-min data |
 | Quantum Wave Matrix (QWM), daily/2yr | 0 trades at literal thresholds; net-negative when loosened | Yes (consistently a loser once it can fire at all) |
 | Trident System (30-min FVG/Doji) | 0 trades at every swept threshold | Untestable — the FVG precondition itself almost never occurs on 24/7 crypto candles |
+| Phase-rotation cycle (time-delay embedding) | 0 trades at default; -$1 to -$200 once coherence loosened | Yes (consistently thin-sample and net-negative once it can fire) |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
