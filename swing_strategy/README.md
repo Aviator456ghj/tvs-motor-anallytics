@@ -334,6 +334,64 @@ produces a strategy with no edge. Combined with the 5-minute result, the
 overall conclusion holds across both resolutions tested: the angle/phase/mass
 gates as specified are either unreachable or, when made reachable, net-losing.
 
+## Variant: Trident System (30-min FVG/Doji institutional pattern)
+
+`trident_backtest.py` implements "THE TRIDENT SYSTEM" playbook (TG Capital
+prop-firm model) as literally as possible: a 30-minute kill-zone gate
+(3:00-6:30 AM NY), a 200-EMA baseline trend filter, a strict 5/9/13/21-EMA
+stack alignment requirement, then a 4-candle Fair Value Gap → 50%
+Consequent-Encroachment → Doji → confirmation-close entry pattern, with SL
+at the doji wick and TP at the playbook's stated 1:20 minimum baseline RR.
+
+**Data-fit caveat, stated upfront**: this playbook is explicitly written
+for FX majors and Gold, built around London-session liquidity structure,
+and itself claims only ~6-15 entries **per year** per instrument. This
+repo has only BTCUSD and only 30 days of 5-minute history — structurally
+incapable of producing a meaningful sample for a strategy this selective,
+in either direction, even with a flawless implementation.
+
+**Documented assumptions** (spec doesn't state these explicitly):
+the SHORT side of the candle pattern is the literal mirror image of the
+LONG side the document describes; the discretionary "macro daily-structure
+trailing target" is not backtested (not objectively codeable) — only the
+1:20 minimum baseline TP is; the FX/Gold "tick buffer" on the stop is
+approximated as 0.05% of price, since BTC has no pip-equivalent; entry
+fills at Candle 4's own close exactly as the text specifies ("market buy
+the millisecond Candle 4 closes" — an idealized zero-slippage fill).
+
+**Result: zero trades, at every cell of a 16-cell parameter sweep
+(doji-body-ratio × minimum-RR).** The funnel in `results_trident.txt`
+shows *why*, and the reason is sharper than just "thresholds too strict":
+
+| Gate | M30 bars surviving |
+|---|---|
+| Inside kill zone | 181 |
+| + 200-EMA trend filter | 181 |
+| + 5/9/13/21 EMA stack aligned | 75 |
+| + FVG + doji-at-CE pattern found | **0** |
+
+The `FVG DIAGNOSTIC` section goes one level deeper and checks for the Fair
+Value Gap *on its own*, with every other filter removed — across all 1,440
+M30 candles in the dataset, a bullish FVG (candle-2 low above candle-1
+high) occurs exactly **once**, and a bearish FVG **never** occurs at all.
+No amount of loosening the doji-body-ratio or minimum-RR sweep parameters
+can produce trades when the gap the pattern depends on essentially never
+forms in the underlying data.
+
+**Honest verdict**: this is a market-structure mismatch, not a tuning
+problem. Continuous 24/7 crypto trading rarely leaves true gaps between
+consecutive candle ranges — FVGs are a pattern born from session-based
+markets (FX/equities/Gold) that close and reopen, where price can jump
+across a range between candles. BTC's near-continuous order book means
+the precondition for this entire playbook almost never exists at the M30
+timeframe in this dataset, independent of and more fundamental than the
+EMA/kill-zone/doji filters layered on top. Combined with the explicit
+~6-15-trades-per-year claim on a 30-day sample, this result cannot be read
+as either confirming or refuting "the Trident System" for its intended FX/Gold
+markets — only as confirmation that the pattern-matching/EMA/risk math
+itself runs correctly and produces sane (if zero) output when it has no
+qualifying setups to act on.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -346,6 +404,7 @@ gates as specified are either unreachable or, when made reachable, net-losing.
 | Cycle (sine-wave) | 80-83% WR, +$18 to +$48 (n=5-6) | **No** - sign flips with TP multiple, period hugs scan boundary |
 | Quantum Wave Matrix (QWM), 5-min/30d | 0 trades at every swept threshold | Untestable — thresholds never co-occur on 30d of 5-min data |
 | Quantum Wave Matrix (QWM), daily/2yr | 0 trades at literal thresholds; net-negative when loosened | Yes (consistently a loser once it can fire at all) |
+| Trident System (30-min FVG/Doji) | 0 trades at every swept threshold | Untestable — the FVG precondition itself almost never occurs on 24/7 crypto candles |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
