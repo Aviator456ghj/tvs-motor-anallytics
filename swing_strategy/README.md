@@ -288,6 +288,52 @@ or thresholds well below 70°/0.995/1.0σ — none of which can be confirmed
 or denied from what's available here. This is a data-availability and
 threshold-calibration finding, not a verdict on the underlying idea.
 
+## Variant: Quantum Wave Matrix, daily resolution (2 years of data, not 30 days)
+
+`qwm_backtest.py`'s zero-trade result came from only having 30 days of
+5-minute data — not enough samples for a strategy whose angle/phase/mass
+gates are individually rare. `qwm_daily_backtest.py` re-runs the same three
+corrected signals (ATR-normalized angle, periodogram-fit phase, z-scored
+mass) on the full ~2-year daily BTCUSD series this repo actually has,
+trading daily bars against a weekly anchor (the daily/weekly analogue of
+M5/H4 — weekly bars are chunked 7 daily bars at a time, same coarsening
+*ratio* concept as H4's 48 5-min bars). One deliberate deviation: the
+London/NY liquidity-gate session filter is **dropped**, because daily bars
+carry no time-of-day and applying an intraday filter to them would be
+meaningless, not just impractical.
+
+**Result: still zero trades — and now for a sharper, more interesting
+reason.** The `ANGLE DISTRIBUTION DIAGNOSTIC` in `results_qwm_daily.txt`
+shows the default (5-day-average) angle never exceeds 44.5° in two full
+years. But a deeper check — varying the lookback used to measure Θ down to
+a single day, the most permissive possible reading of "vector angle of
+price/time" — settles the question for good:
+
+| Angle lookback | Max \|Θ\| ever reached (2yr) | Reaches 70° trigger? |
+|---|---|---|
+| 5-day average | 44.5° | No |
+| 3-day average | 54.8° | No |
+| 2-day average | 61.4° | No |
+| 1-day (single best day in 2 years) | **68.5°** | **No — falls just short** |
+
+The single best single-day move in two years of real BTCUSD price action,
+expressed as ATRs-of-slope-per-bar, comes in at 68.5° — under the
+playbook's 70° trigger. The threshold isn't merely strict, it's
+calibrated at or just past the empirical ceiling of this asset's
+historical volatility. With the angle gate loosened to 50-65° (so the
+funnel can actually be exercised) and lookback=1, 1-9 trades appear per
+cell of a 20-cell sweep — and **every single one is net-negative** (0-20%
+win rate, -$1,000 to -$6,000 on $100,000). Full table in
+`results_qwm_daily.txt`'s `LOOKBACK SENSITIVITY` section.
+
+**Honest verdict**: this isn't a small-sample problem anymore — two years
+of real daily BTCUSD is the same window the other backtests in this repo
+use to draw real conclusions. The literal QWM thresholds never fire
+regardless of lookback choice, and loosening them to where they do fire
+produces a strategy with no edge. Combined with the 5-minute result, the
+overall conclusion holds across both resolutions tested: the angle/phase/mass
+gates as specified are either unreachable or, when made reachable, net-losing.
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -298,7 +344,8 @@ threshold-calibration finding, not a verdict on the underlying idea.
 | Breakout-continuation v2 | 42.9-50% WR, +$46 to +$91 | **Yes** — positive at every threshold with real sample, but total n is thin (~20 trades pooled) |
 | CVD divergence (real + proxy) | 0% WR, -$100 (n=2 each) | Sample too small to judge |
 | Cycle (sine-wave) | 80-83% WR, +$18 to +$48 (n=5-6) | **No** - sign flips with TP multiple, period hugs scan boundary |
-| Quantum Wave Matrix (QWM) | 0 trades at every swept threshold | Untestable — thresholds never co-occur on 30d of 5-min data |
+| Quantum Wave Matrix (QWM), 5-min/30d | 0 trades at every swept threshold | Untestable — thresholds never co-occur on 30d of 5-min data |
+| Quantum Wave Matrix (QWM), daily/2yr | 0 trades at literal thresholds; net-negative when loosened | Yes (consistently a loser once it can fire at all) |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
