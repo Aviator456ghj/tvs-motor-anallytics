@@ -771,6 +771,86 @@ the "big player" premise than any single trade print, but that data was
 never captured historically and Kraken's public API cannot provide it
 retroactively — only a live monitor could ever use it.
 
+## Variant: Daily Heikin-Ashi bias + 34-EMA High/Low band breakout
+
+A different, fully mechanical retail system (not ICT/order-block-based):
+establish a directional bias from yesterday's daily Heikin-Ashi candle
+color, then on a lower execution timeframe wait for price to cross and
+close outside a channel built from a 34-EMA of High (upper band) and a
+34-EMA of Low (lower band) — only trade in the direction the daily bias
+allows, do nothing while price is inside the channel, exit the moment a
+close falls back inside the band you broke through.
+
+This repo has no Indian equity/options data (no 9:15am sector scan, no
+Calls/Puts), so it's adapted to what's actually here: BTCUSD is 24/7, so
+there's no real overnight gap (the "gap mismatch" rule has no direct
+equivalent — the cross-and-close entry condition already produces the same
+protective effect, since it can't fire until price genuinely re-enters the
+right side of the channel). Daily bias uses the full 2-year daily history
+(`data/btc_usd_daily.csv`) for a stable HA color; execution is the 5-minute
+chart (`data/btc_usd_5min_cvd.csv`, ~30 days). `ha_bias_ema_band_backtest.py`
+implements it: stop is the dynamic band itself (close back inside it =
+exit, filled at next bar's open), target is a fixed R-multiple of the
+distance from entry to the band at entry (swept 1.0R-3.0R), $5,000/1%
+account convention as everywhere else.
+
+### Headline result (34-EMA, TP 2.0R)
+
+| Metric | Value |
+|---|---|
+| Calendar days / days with usable bias | 31 / 31 |
+| Bias-aligned channel breakout signals | 375 |
+| **Traded** | **367** |
+| Win rate | 46.3% (170W-197L) |
+| Avg R-multiple | **-1.87R** |
+| Net P&L on $5,000 account | **-$34,272.57** |
+
+That net P&L is not a typo. A 46.3% win rate against a 2:1 reward:risk
+should be profitable on raw expectancy (a naive flat +2R/-1R model on the
+same win/loss count nets **+0.39R/trade**, strongly positive) — the
+catastrophic dollar result comes from somewhere else entirely.
+
+### Root cause: the stop distance is an indicator value, not a structural
+price level, and it can shrink to near-zero
+
+The "risk" for this system's $50-fixed-dollar position sizing is the
+distance from entry to the EMA band *at the moment of entry*. On a 5-min
+chart that distance is sometimes only a few dollars (median risk $34.69,
+but the 1st percentile is $0.49) — and the $50-risk model responds to a
+tiny stop distance by sizing an enormous position. When the next bar gaps
+past the (also-moving) band on the exit fill, that "1R" loss is actually
+many R: 33 of 367 closed trades lost worse than -5R, 19 worse than -10R,
+one single trade lost **-96.7R** (median R was a much more reasonable
+-0.70). A handful of these blowups account for nearly all of the -$34,273.
+
+### Robustness check: cap the position size with a minimum risk floor
+
+Re-running every cell of the EMA-period × TP-multiple sweep with the
+$50-risk denominator floored at 0.05-0.20% of entry price (i.e. capping
+leverage instead of letting a $0.49 stop distance size the trade) removes
+the tail-blowups but does **not** flip the result positive anywhere — full
+48-cell table in `results_ha_bias_ema_band.txt`:
+
+| EMA | TP | Best floor | Net P&L |
+|---|---|---|---|
+| 13 | 1.0R | 0.20% | -$4,506 |
+| 21 | 3.0R | 0.20% | -$1,881 |
+| 34 | 3.0R | 0.20% | **-$665** (best cell of all 48) |
+| 55 | 1.5R | 0.20% | -$696 |
+
+**Verdict: two separate, independently confirmed findings.** (1) The
+underlying bias+breakout mechanism, even completely decoupled from every
+ICT/order-block/Fibonacci idea tried elsewhere in this README, still shows
+no real edge on this 30-day BTCUSD window — every one of 64 cells checked
+(16 raw + 48 floored) is net-negative, and the best case after fixing the
+sizing flaw is a near-breakeven -$665 on 360 trades. (2) Separately and
+more urgently: sizing a position from a *dynamic indicator's* distance to
+price (rather than a fixed structural stop) is dangerous with fixed-dollar
+risk sizing — it can produce 30-90R "1R" losses when the indicator itself
+sits a few dollars from price at entry. That's a real risk-management
+lesson worth carrying into any live system, independent of whether this
+particular strategy has edge (it doesn't, here).
+
 ## Bottom line across all variants
 
 | Strategy | Best single result | Robust across thresholds? |
@@ -790,6 +870,7 @@ retroactively — only a live monitor could ever use it.
 | Order block + MTF structure (4H bias/15m OB/1m CHoCH) | 0% WR, -$50 (n=1) at default; 37.5-50% WR, ~flat (n=8) loosened | Untestable at structural thresholds (0 trades at 2-3%); dominant finding is 82-100% fake-out rate on every OB touch |
 | Order-flow confirmed order block (absorption + CVD divergence) | 27.3% WR, -$100 (n=11) at default | Yes (0-33% WR, net-negative at every threshold and TP multiple) — fake-out rate drops to 61% but the market still extends through visible delta exhaustion most of the time |
 | Block-trade confirmed order block (real ≥1-8 BTC prints, real aggressor side) | 0% WR, -$100 (n=2) at default; best cell 33% WR, $0 (n=3) | Too thin to call robust — signal fires only 2-8 times per 30 days at any sane threshold; flat-to-negative wherever it has any sample |
+| Daily HA bias + 34-EMA High/Low band breakout | 46.3% WR, -$34,273 raw (n=367); -$665 best of 48 cells after capping the risk-floor sizing flaw | Yes (net-negative in all 64 cells checked, raw and risk-floored) — also exposed a real sizing danger (stop-distance-as-indicator can blow up fixed-dollar-risk sizing to 30-90R losses) |
 
 v2 is the first variant that's both net-positive *and* survives a parameter
 and threshold sweep rather than relying on one lucky combination. It's not
