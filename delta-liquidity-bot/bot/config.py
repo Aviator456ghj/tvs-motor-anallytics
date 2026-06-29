@@ -10,16 +10,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _clean(name: str, default) -> str:
+    """Read an env var, tolerating systemd EnvironmentFile semantics.
+
+    python-dotenv strips trailing ``# comments`` from values, but systemd's
+    ``EnvironmentFile=`` keeps everything after ``=`` verbatim. Strip inline
+    comments and surrounding whitespace here so both paths behave the same.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return str(default)
+    return raw.split("#", 1)[0].strip()
+
+
 def _b(name: str, default: bool) -> bool:
-    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+    return _clean(name, default).lower() in ("1", "true", "yes", "on")
 
 
 def _f(name: str, default: float) -> float:
-    return float(os.getenv(name, default))
+    return float(_clean(name, default))
 
 
 def _i(name: str, default: int) -> int:
-    return int(os.getenv(name, default))
+    return int(_clean(name, default))
 
 
 @dataclass
