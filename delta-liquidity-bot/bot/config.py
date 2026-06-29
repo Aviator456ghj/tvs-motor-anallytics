@@ -76,6 +76,8 @@ class Config:
     poll_seconds: int = _i("POLL_SECONDS", 60)
     cooldown_bars: int = _i("COOLDOWN_BARS", 1)
     state_file: str = os.getenv("STATE_FILE", "bot_state.json")
+    status_file: str = os.getenv("STATUS_FILE", "bot_status.json")
+    dashboard_port: int = _i("DASHBOARD_PORT", 8080)
 
     def validate(self) -> None:
         if not self.api_key or not self.api_secret:

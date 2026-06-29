@@ -46,11 +46,31 @@ class Bot:
         self.product_id = int(product["id"])
         self.tick_size = float(product.get("tick_size", 0.5))
         self.contract_value = cfg.contract_value or float(product.get("contract_value", 0.001))
+        self.last_event = None  # last SIGNAL/PLAN, surfaced on the dashboard
         log.info(
             "Product %s id=%s tick=%s contract_value=%s | mode=%s",
             cfg.symbol, self.product_id, self.tick_size, self.contract_value,
             "LIVE" if cfg.live else "DRY-RUN",
         )
+
+    def _write_status(self, price: float, trend: str, box) -> None:
+        """Snapshot current state to status_file for the web dashboard."""
+        status = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "symbol": self.cfg.symbol,
+            "mode": "LIVE" if self.cfg.live else "DRY-RUN",
+            "price": round(price, 4),
+            "trend": trend,
+            "range_low": round(box.low, 2),
+            "range_high": round(box.high, 2),
+            "mid": round(box.mid, 2),
+            "last_event": self.last_event,
+        }
+        try:
+            with open(self.cfg.status_file, "w") as f:
+                json.dump(status, f)
+        except OSError:
+            pass
 
     # ----------------------------------------------------------- state
     def _load_state(self) -> dict:
@@ -110,6 +130,7 @@ class Bot:
             "px=%.1f  trend=%s  range=[%.0f .. %.0f]  mid=%.0f",
             last["close"], trend, box.low, box.high, box.mid,
         )
+        self._write_status(last["close"], trend, box)
 
         if last["time"] <= self.state.get("last_signal_bar", 0):
             return  # already handled this bar
@@ -160,6 +181,19 @@ class Bot:
             plan.side, plan.size, plan.entry, plan.stop, plan.take_profit,
             plan.risk_amount, cfg.settle_asset, plan.notional,
         )
+
+        self.last_event = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kind": sig.kind,
+            "side": plan.side,
+            "size": plan.size,
+            "entry": round(plan.entry, 4),
+            "stop": round(plan.stop, 4),
+            "take_profit": round(plan.take_profit, 4),
+            "reason": sig.reason,
+            "mode": "LIVE" if cfg.live else "DRY-RUN",
+        }
+        self._write_status(sig.entry, trend, box)
 
         self.state["last_signal_bar"] = last["time"]
         self._save_state()

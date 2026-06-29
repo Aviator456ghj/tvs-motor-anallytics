@@ -1,0 +1,17 @@
+[Unit]
+Description=Delta Liquidity Bot Dashboard (web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/home/ubuntu/tvs-motor-anallytics/delta-liquidity-bot
+EnvironmentFile=/home/ubuntu/tvs-motor-anallytics/delta-liquidity-bot/.env
+ExecStart=/home/ubuntu/tvs-motor-anallytics/delta-liquidity-bot/.venv/bin/python -m bot.dashboard
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
