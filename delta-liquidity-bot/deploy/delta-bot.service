@@ -1,0 +1,24 @@
+[Unit]
+Description=Delta Liquidity-Sweep Swing Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and paths to your server
+User=botuser
+WorkingDirectory=/opt/delta-liquidity-bot
+EnvironmentFile=/opt/delta-liquidity-bot/.env
+ExecStart=/opt/delta-liquidity-bot/.venv/bin/python -m bot.bot
+Restart=always
+RestartSec=10
+# Crash-loop guard: if it dies 5x in 5 min, stop and alert
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

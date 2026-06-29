@@ -1,0 +1,16 @@
+services:
+  delta-bot:
+    build: .
+    container_name: delta-liquidity-bot
+    restart: unless-stopped          # auto-restart on crash or host reboot
+    env_file: .env                   # your secrets/config (never commit this)
+    volumes:
+      - bot-data:/data               # persists bot_state.json across restarts
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  bot-data:
