@@ -1,0 +1,220 @@
+//@version=6
+// ============================================================================
+//  Liquidity-Sweep Structure Engine  ·  Pine Script v6  ·  Strategy + Alerts
+// ----------------------------------------------------------------------------
+//  Trades market structure the disciplined way:
+//   • Maps swing structure (HH / HL / LH / LL) from confirmed pivots
+//   • LONG  on a sweep of a swing LOW near the range edge that RECLAIMS on volume
+//   • SHORT on a sweep of a swing HIGH near the range edge that REJECTS on volume
+//   • Structure-flip breakouts when price CLOSES beyond the range extreme
+//   • Fakeout guards: edges-only, close-back-inside, volume confirmation,
+//     optional higher-timeframe trend filter
+//   • Risk-based position sizing, structural stop, R-multiple target,
+//     break-even + ATR trailing management
+//   • On-chart dashboard + ready-to-wire alerts
+// ============================================================================
+
+strategy("Liquidity-Sweep Structure Engine",
+     overlay              = true,
+     pyramiding           = 0,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.fixed,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.05,
+     process_orders_on_close = true,
+     calc_on_every_tick   = false,
+     max_lines_count      = 500,
+     max_labels_count     = 500,
+     max_boxes_count      = 500)
+
+// ─── Inputs ────────────────────────────────────────────────────────────────
+gS = "Structure"
+pivLen     = input.int(3,   "Swing pivot strength", minval=1, maxval=20, group=gS,
+     tooltip="Bars on each side of a pivot. Higher = cleaner but later swings.")
+rangeLen   = input.int(40,  "Range lookback (bars)", minval=10, group=gS)
+edgeBand   = input.float(0.25, "Edge band (frac of range)", minval=0.05, maxval=0.5, step=0.05, group=gS,
+     tooltip="A swept level must sit within this fraction of a range edge. Smaller = stricter.")
+
+gF = "Fakeout Filters"
+volFactor  = input.float(1.3, "Volume factor (× avg)", minval=1.0, step=0.1, group=gF,
+     tooltip="Sweep/flip candle volume must beat the average by this much.")
+volLen     = input.int(20,  "Volume average length", minval=5, group=gF)
+reclaimPct = input.float(0.05, "Reclaim buffer %", minval=0.0, step=0.01, group=gF,
+     tooltip="Close must reclaim the swept level by at least this %.")
+flipPct    = input.float(0.10, "Flip breakout buffer %", minval=0.0, step=0.01, group=gF)
+
+gE = "Signals"
+useLongSweep  = input.bool(true,  "Long sweeps (HL reversals)", group=gE)
+useShortSweep = input.bool(true,  "Short sweeps (LH rejections)", group=gE)
+useFlip       = input.bool(true,  "Structure-flip breakouts", group=gE)
+
+gH = "HTF Trend Filter"
+useHTF   = input.bool(true, "Filter entries by higher-timeframe trend", group=gH)
+htfTf    = input.timeframe("240", "HTF", group=gH)
+htfEmaLn = input.int(50, "HTF EMA length", minval=5, group=gH)
+
+gR = "Risk & Targets"
+riskPct  = input.float(1.0, "Risk per trade (% equity)", minval=0.1, step=0.1, group=gR)
+rrTarget = input.float(2.0, "Take-profit (R multiple)", minval=0.5, step=0.5, group=gR)
+atrPad   = input.float(0.2, "Stop pad (× ATR)", minval=0.0, step=0.1, group=gR)
+useBE    = input.bool(true, "Move stop to break-even at +1R", group=gR)
+useTrail = input.bool(true, "ATR trail after +1R", group=gR)
+trailAtr = input.float(2.0, "Trail distance (× ATR)", minval=0.5, step=0.5, group=gR)
+
+gV = "Visuals"
+showStruct = input.bool(true, "Show swings & range", group=gV)
+showLevels = input.bool(true, "Show SL/TP lines", group=gV)
+showPanel  = input.bool(true, "Show dashboard", group=gV)
+
+// ─── Core series ───────────────────────────────────────────────────────────
+atr     = ta.atr(14)
+avgVol  = ta.sma(volume, volLen)
+volOk   = avgVol > 0 and volume >= avgVol * volFactor
+
+// Confirmed pivots (value sits pivLen bars back; we read it on the current bar)
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low,  pivLen, pivLen)
+
+var float swHigh1 = na, var float swHigh0 = na   // 0 = latest, 1 = previous
+var float swLow1  = na, var float swLow0  = na
+if not na(ph)
+    swHigh1 := swHigh0
+    swHigh0 := ph
+if not na(pl)
+    swLow1 := swLow0
+    swLow0 := pl
+
+// Structure classification (HH/HL/LH/LL)
+hh = not na(swHigh0) and not na(swHigh1) and swHigh0 > swHigh1
+lh = not na(swHigh0) and not na(swHigh1) and swHigh0 < swHigh1
+hl = not na(swLow0)  and not na(swLow1)  and swLow0  > swLow1
+ll = not na(swLow0)  and not na(swLow1)  and swLow0  < swLow1
+trend = hh and hl ? "Uptrend (HH+HL)" :
+         lh and ll ? "Downtrend (LH+LL)" :
+         hl and lh ? "Basing (HL, LH)" :
+         hh and ll ? "Topping (HH, LL)" : "Range / mixed"
+
+// Range box (exclude the current bar so a breakout is vs the prior extreme)
+rangeHigh = ta.highest(high, rangeLen)[1]
+rangeLow  = ta.lowest(low,  rangeLen)[1]
+rangeSize = rangeHigh - rangeLow
+rangeMid  = (rangeHigh + rangeLow) / 2
+edge      = rangeSize * edgeBand
+
+// HTF bias
+htfEma  = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfEmaLn), lookahead=barmerge.lookahead_off)
+htfBull = close > htfEma
+longBiasOk  = not useHTF or htfBull
+shortBiasOk = not useHTF or not htfBull
+
+// ─── Signal logic (evaluated on bar close) ─────────────────────────────────
+reclaimBuf = reclaimPct / 100.0
+flipBuf    = flipPct / 100.0
+
+nearLow  = not na(swLow0)  and swLow0  <= rangeLow + edge
+nearHigh = not na(swHigh0) and swHigh0 >= rangeHigh - edge
+
+longSweep  = useLongSweep  and nearLow  and low < swLow0   and close > swLow0  * (1 + reclaimBuf) and volOk
+shortSweep = useShortSweep and nearHigh and high > swHigh0 and close < swHigh0 * (1 - reclaimBuf) and volOk
+flipLong   = useFlip and close > rangeHigh * (1 + flipBuf) and volOk
+flipShort  = useFlip and close < rangeLow  * (1 - flipBuf) and volOk
+
+longSig  = (longSweep  or flipLong)  and longBiasOk
+shortSig = (shortSweep or flipShort) and shortBiasOk
+
+// Structural stop: sweep -> beyond the swept wick; flip -> the broken extreme
+longStopRaw  = longSweep  ? math.min(low,  nz(swLow0,  low))  : rangeHigh
+shortStopRaw = shortSweep ? math.max(high, nz(swHigh0, high)) : rangeLow
+longStop  = longStopRaw  - atr * atrPad
+shortStop = shortStopRaw + atr * atrPad
+
+// ─── Position management ───────────────────────────────────────────────────
+flat = strategy.position_size == 0
+
+riskAmt   = strategy.equity * riskPct / 100.0
+qtyLong   = longStop  < close ? riskAmt / (close - longStop)  : na
+qtyShort  = shortStop > close ? riskAmt / (shortStop - close) : na
+
+if longSig and flat and not na(qtyLong)
+    risk = close - longStop
+    strategy.entry("Long", strategy.long, qty=qtyLong)
+    strategy.exit("Long-x", "Long", stop=longStop, limit=close + risk * rrTarget)
+
+if shortSig and flat and not na(qtyShort)
+    risk = shortStop - close
+    strategy.entry("Short", strategy.short, qty=qtyShort)
+    strategy.exit("Short-x", "Short", stop=shortStop, limit=close - risk * rrTarget)
+
+// Break-even + ATR trail once the trade is +1R in profit
+var float entryPx = na
+var float initRisk = na
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    entryPx  := strategy.position_avg_price
+    initRisk := math.abs(entryPx - (strategy.position_size > 0 ? longStop : shortStop))
+
+if strategy.position_size > 0 and not na(entryPx)
+    inProfit1R = close >= entryPx + initRisk
+    beStop     = useBE and inProfit1R ? entryPx : na
+    trStop     = useTrail and inProfit1R ? close - atr * trailAtr : na
+    newStop    = math.max(nz(beStop, na), nz(trStop, na))
+    if not na(newStop)
+        strategy.exit("Long-x", "Long", stop=newStop, limit=entryPx + initRisk * rrTarget)
+
+if strategy.position_size < 0 and not na(entryPx)
+    inProfit1R = close <= entryPx - initRisk
+    beStop     = useBE and inProfit1R ? entryPx : na
+    trStop     = useTrail and inProfit1R ? close + atr * trailAtr : na
+    newStop    = na(beStop) and na(trStop) ? na : math.min(nz(beStop, 1e12), nz(trStop, 1e12))
+    if not na(newStop)
+        strategy.exit("Short-x", "Short", stop=newStop, limit=entryPx - initRisk * rrTarget)
+
+// ─── Visuals ───────────────────────────────────────────────────────────────
+plot(showStruct ? rangeHigh : na, "Range High", color.new(color.red, 40), 1, plot.style_linebr)
+plot(showStruct ? rangeLow  : na, "Range Low",  color.new(color.green, 40), 1, plot.style_linebr)
+plot(showStruct ? rangeMid  : na, "Range Mid",  color.new(color.gray, 70), 1, plot.style_linebr)
+
+plotshape(showStruct and not na(ph) ? high[pivLen] : na, "Swing High", shape.triangledown, location.absolute, color.new(color.red, 0), size=size.tiny, offset=-pivLen)
+plotshape(showStruct and not na(pl) ? low[pivLen]  : na, "Swing Low",  shape.triangleup,   location.absolute, color.new(color.green, 0), size=size.tiny, offset=-pivLen)
+
+bull = color.new(#089981, 0)
+bear = color.new(#f23645, 0)
+if longSig
+    label.new(bar_index, low, (flipLong ? "FLIP▲" : "SWEEP▲"), style=label.style_label_up,   color=bull, textcolor=color.white, size=size.small)
+if shortSig
+    label.new(bar_index, high, (flipShort ? "FLIP▼" : "SWEEP▼"), style=label.style_label_down, color=bear, textcolor=color.white, size=size.small)
+
+// Live SL/TP lines while in a trade
+var line slLine = na, var line tpLine = na
+if showLevels and strategy.position_size != 0
+    sl = strategy.position_size > 0 ? nz(entryPx, close) - nz(initRisk, atr) : nz(entryPx, close) + nz(initRisk, atr)
+    tp = strategy.position_size > 0 ? nz(entryPx, close) + nz(initRisk, atr) * rrTarget : nz(entryPx, close) - nz(initRisk, atr) * rrTarget
+    line.delete(slLine), line.delete(tpLine)
+    slLine := line.new(bar_index-1, sl, bar_index, sl, color=bear, width=1, style=line.style_dashed, extend=extend.right)
+    tpLine := line.new(bar_index-1, tp, bar_index, tp, color=bull, width=1, style=line.style_dashed, extend=extend.right)
+else if showLevels and strategy.position_size == 0
+    line.delete(slLine), line.delete(tpLine)
+
+// ─── Dashboard ─────────────────────────────────────────────────────────────
+var table dash = table.new(position.top_right, 2, 7, border_width=1, frame_color=color.new(color.gray, 60))
+if showPanel and barstate.islast
+    posTxt = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    posCol = strategy.position_size > 0 ? bull : strategy.position_size < 0 ? bear : color.new(color.gray, 0)
+    f(r, k, v, vc) =>
+        table.cell(dash, 0, r, k, text_size=size.small, text_color=color.new(color.gray, 0), text_halign=text.align_left)
+        table.cell(dash, 1, r, v, text_size=size.small, text_color=vc, text_halign=text.align_right)
+    table.cell(dash, 0, 0, "Liquidity Engine", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(dash, 1, 0, syminfo.ticker, text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    f(1, "Trend", trend, color.new(color.white, 0))
+    f(2, "Range", str.tostring(rangeLow, format.mintick) + " – " + str.tostring(rangeHigh, format.mintick), color.new(color.white, 0))
+    f(3, "HTF bias", useHTF ? (htfBull ? "Bullish" : "Bearish") : "off", useHTF ? (htfBull ? bull : bear) : color.new(color.gray, 0))
+    f(4, "Position", posTxt, posCol)
+    f(5, "Open P&L", str.tostring(strategy.openprofit, "#.##"), strategy.openprofit >= 0 ? bull : bear)
+    f(6, "Net profit", str.tostring(strategy.netprofit, "#.##"), strategy.netprofit >= 0 ? bull : bear)
+
+// ─── Alerts ────────────────────────────────────────────────────────────────
+alertcondition(longSig,  "LONG signal",  "Liquidity LONG {{ticker}} @ {{close}}")
+alertcondition(shortSig, "SHORT signal", "Liquidity SHORT {{ticker}} @ {{close}}")
+if longSig
+    alert("LONG " + (flipLong ? "flip-breakout" : "sweep-reclaim") + " on " + syminfo.ticker + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if shortSig
+    alert("SHORT " + (flipShort ? "flip-breakdown" : "sweep-rejection") + " on " + syminfo.ticker + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
