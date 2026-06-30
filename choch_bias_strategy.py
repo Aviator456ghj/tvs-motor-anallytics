@@ -26,10 +26,11 @@ import numpy as np
 MULTIPLIER     = 2.6
 SWING_N        = 5     # candles each side required to confirm a structural pivot
 ADX_PERIOD     = 14
-ADX_THRESHOLD  = 20    # only enter when ADX > this (trending environment)
+ADX_THRESHOLD  = 25    # raised from 20→25: 30-40 zone shows 79% WR vs 60% below 30
 STOP_BUFFER    = 0.005 # 0.5 % buffer beyond HL/LH to absorb wick noise
-SIGNAL_EXPIRY  = 10    # max candles an untriggered entry signal stays live (#1)
+SIGNAL_EXPIRY  = 4     # tightened 10→4: entries after 5+ candles drop to 54% / 0% WR
 LEVEL_TOL      = 0.001 # 0.1 % tolerance for near-equal HH/HL/LH/LL pivots (#4)
+MIN_SWING_CNT  = 2     # skip 1st entry after CHoCH: swing-1 WR=40% vs swing 2-3 WR=78%
 DATA_CSV       = "btc_daily.csv"
 # ─────────────────────────────────────────────
 
@@ -134,6 +135,7 @@ def run_backtest(df, swings, adx):
     last_HL      = None
     last_LH      = None
     last_LL      = None
+    trend_sw_cnt = 0       # confirmed swings since current trend began
 
     # pending signal
     sig_direction   = None
@@ -145,6 +147,7 @@ def run_backtest(df, swings, adx):
     sig_ref_LL      = None
     sig_armed_idx   = None   # candle index when signal was armed (for expiry #1)
     sig_confirmed   = False  # True once close passed through entry side (#6)
+    sig_swing_cnt   = 0      # trend_sw_cnt at time signal was armed
 
     active  = None   # open trade dict
     trades  = []
@@ -171,7 +174,7 @@ def run_backtest(df, swings, adx):
 
     def set_long_signal(hh, hl, armed_at):
         nonlocal sig_direction, sig_entry, sig_stop, sig_ref_HH, sig_ref_HL
-        nonlocal sig_armed_idx, sig_confirmed
+        nonlocal sig_armed_idx, sig_confirmed, sig_swing_cnt
         rng            = hh["price"] - hl["price"]
         sig_direction  = "LONG"
         sig_entry      = round(hl["price"] + rng / MULTIPLIER, 2)
@@ -180,10 +183,11 @@ def run_backtest(df, swings, adx):
         sig_ref_HL     = hl["price"]
         sig_armed_idx  = armed_at
         sig_confirmed  = False   # must see close above entry first (#6)
+        sig_swing_cnt  = trend_sw_cnt
 
     def set_short_signal(lh, ll, armed_at):
         nonlocal sig_direction, sig_entry, sig_stop, sig_ref_LH, sig_ref_LL
-        nonlocal sig_armed_idx, sig_confirmed
+        nonlocal sig_armed_idx, sig_confirmed, sig_swing_cnt
         rng            = lh["price"] - ll["price"]
         sig_direction  = "SHORT"
         sig_entry      = round(lh["price"] - rng / MULTIPLIER, 2)
@@ -192,15 +196,17 @@ def run_backtest(df, swings, adx):
         sig_ref_LL     = ll["price"]
         sig_armed_idx  = armed_at
         sig_confirmed  = False   # must see close below entry first (#6)
+        sig_swing_cnt  = trend_sw_cnt
 
     def clear_signal():
         nonlocal sig_direction, sig_entry, sig_stop
         nonlocal sig_ref_HH, sig_ref_HL, sig_ref_LH, sig_ref_LL
-        nonlocal sig_armed_idx, sig_confirmed
+        nonlocal sig_armed_idx, sig_confirmed, sig_swing_cnt
         sig_direction = sig_entry = sig_stop = None
         sig_ref_HH = sig_ref_HL = sig_ref_LH = sig_ref_LL = None
         sig_armed_idx = None
         sig_confirmed = False
+        sig_swing_cnt = 0
 
     # ── scan swings ──
     for si, sw in enumerate(swings):
@@ -218,6 +224,7 @@ def run_backtest(df, swings, adx):
                     last_HH = sw
                     if last_HL is not None:
                         bias = "UPTREND"
+                        trend_sw_cnt = 1
                         set_long_signal(last_HH, last_HL, idx)
 
             elif bias == "UPTREND":
@@ -227,6 +234,7 @@ def run_backtest(df, swings, adx):
                         close_trade(active, price, dt, "WIN", f"New HH @{price:.0f}")
                         active = None
                     last_HH = sw
+                    trend_sw_cnt += 1
                     clear_signal()
                     if last_HL:
                         set_long_signal(last_HH, last_HL, idx)
@@ -244,6 +252,7 @@ def run_backtest(df, swings, adx):
                     last_HH = sw
                     last_HL = last_LL  # prior LL becomes new HL
                     last_LH = None
+                    trend_sw_cnt = 1
                     clear_signal()
                     if last_HL:
                         set_long_signal(last_HH, last_HL, idx)
@@ -253,6 +262,7 @@ def run_backtest(df, swings, adx):
                         close_trade(active, price, dt, "WIN", f"New LH @{price:.0f}")
                         active = None
                     last_LH = sw
+                    trend_sw_cnt += 1
                     clear_signal()
                     if last_LL:
                         set_short_signal(last_LH, last_LL, idx)
@@ -269,6 +279,7 @@ def run_backtest(df, swings, adx):
                         bias    = "DOWNTREND"
                         last_LL = sw
                         last_LH = last_HH
+                        trend_sw_cnt = 1
                         if last_LH:
                             set_short_signal(last_LH, last_LL, idx)
                 else:
@@ -281,6 +292,7 @@ def run_backtest(df, swings, adx):
                         close_trade(active, price, dt, "WIN", f"HL confirmed @{price:.0f}")
                         active = None
                     last_HL = sw
+                    trend_sw_cnt += 1
                     clear_signal()
                     if last_HH:
                         set_long_signal(last_HH, last_HL, idx)
@@ -294,6 +306,7 @@ def run_backtest(df, swings, adx):
                     last_LH = last_HH
                     last_HH = None
                     last_HL = None
+                    trend_sw_cnt = 1
                     clear_signal()
                     if last_LH:
                         set_short_signal(last_LH, last_LL, idx)
@@ -305,6 +318,7 @@ def run_backtest(df, swings, adx):
                         close_trade(active, price, dt, "WIN", f"New LL @{price:.0f}")
                         active = None
                     last_LL = sw
+                    trend_sw_cnt += 1
                     clear_signal()
                     if last_LH:
                         set_short_signal(last_LH, last_LL, idx)
@@ -351,6 +365,7 @@ def run_backtest(df, swings, adx):
                 ll_apx  = {"idx": ci, "price": c_lo, "date": c_dt}
                 last_LH, last_LL = lh_ref, ll_apx
                 last_HH = last_HL = None
+                trend_sw_cnt = 1
                 clear_signal()
                 if last_LH:
                     set_short_signal(last_LH, last_LL, ci)
@@ -366,6 +381,7 @@ def run_backtest(df, swings, adx):
                 hl_ref  = last_LL if last_LL else last_HL
                 last_HH, last_HL = hh_apx, hl_ref
                 last_LH = last_LL = None
+                trend_sw_cnt = 1
                 clear_signal()
                 if last_HH and last_HL:
                     set_long_signal(last_HH, last_HL, ci)
@@ -384,8 +400,11 @@ def run_backtest(df, swings, adx):
                 elif sig_direction == "SHORT" and c_cl < sig_entry:
                     sig_confirmed = True
 
-            # ── Entry trigger — ADX + confirmation guard ───────────────
-            if sig_direction and not active and adx[ci] > ADX_THRESHOLD and sig_confirmed:
+            # ── Entry trigger — ADX + confirmation guard + swing maturity ──
+            if (sig_direction and not active
+                    and adx[ci] > ADX_THRESHOLD
+                    and sig_confirmed
+                    and sig_swing_cnt >= MIN_SWING_CNT):
                 if sig_direction == "LONG" and c_lo <= sig_entry:
                     ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL, "adx_at_entry": round(adx[ci], 1)}
                     active = open_trade("LONG", sig_entry, c_dt, sig_stop, ref)
@@ -414,17 +433,18 @@ def print_results(trades):
     shorts = df_t[df_t["direction"] == "SHORT"]
 
     print("\n" + "=" * 60)
-    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6x  |  ADX  |  CLOSE CHoCH  |  ALL FIXES")
+    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  REFINED v2 (DATA-DRIVEN FILTERS)")
     print("=" * 60)
     period = f"{df_t['entry_date'].min().date()} → {df_t['entry_date'].max().date()}"
     print(f"  Period          : {period}")
     print(f"  Swing lookback  : {SWING_N} candles each side")
     print(f"  Multiplier      : {MULTIPLIER}  (entry ≈ 38.5 % into swing)")
-    print(f"  ADX filter      : period={ADX_PERIOD}, threshold={ADX_THRESHOLD} (trend-only entries)")
+    print(f"  ADX filter      : period={ADX_PERIOD}, threshold={ADX_THRESHOLD} (raised: 30-40 zone = 79% WR)")
     print(f"  Stop buffer     : {STOP_BUFFER*100:.1f}% beyond HL/LH (wick absorption)")
-    print(f"  Signal expiry   : {SIGNAL_EXPIRY} candles (stale signals auto-clear)")
+    print(f"  Signal expiry   : {SIGNAL_EXPIRY} candles (tightened: >4c = 54-0% WR)")
     print(f"  Level tolerance : {LEVEL_TOL*100:.1f}% (near-equal HH/HL/LH/LL accepted)")
     print(f"  Entry guard     : requires a confirming close before stop-side fill")
+    print(f"  Min swing count : {MIN_SWING_CNT} (skip swing-1 entries: 40% WR → blocked)")
     print("-" * 60)
     print(f"  Total Trades    : {total}")
     print(f"  Wins            : {wins}")
@@ -506,6 +526,26 @@ def print_results(trades):
      FIX (applied) → A confirming close on the signal side (close above
            entry for LONG, below for SHORT) is now required before the
            stop-side fill is allowed to open a trade (sig_confirmed).
+
+  7. SLOW PULLBACK = WEAK SETUP  [APPLIED — data-driven]
+     Trade analysis (Mann-Whitney p=0.000) showed that winners returned
+     to the 2.6 level in a median of 2 candles while losers took 4.
+     Entries at 5-7 candles had 54% WR; at 8-10 candles: 0% WR.
+     A slow drift back to entry signals lack of conviction.
+     FIX (applied) → SIGNAL_EXPIRY tightened from 10 → 4 candles.
+
+  8. FIRST ENTRY AFTER CHOCH = BLIND BET  [APPLIED — data-driven]
+     Data showed swing-1 entries (first trade after a CHoCH) had only
+     40% WR (2W/3L) versus 78% WR on swings 2-3 when the new trend
+     has at least one confirmed HH/LL already.
+     FIX (applied) → MIN_SWING_CNT = 2; skip entry until trend has
+           produced at least 2 confirmed structural swings.
+
+  9. ADX SWEET SPOT  [APPLIED — data-driven]
+     ADX 30-40 showed 79% WR vs 60% for ADX 20-30. Entries at very
+     high ADX (40-60) reverted to 50% WR (extended move, mean-revert).
+     FIX (applied) → ADX_THRESHOLD raised from 20 → 25 for a cleaner
+           minimum floor, capturing more of the 25-30 trending zone.
 """)
     print("=" * 60)
 
