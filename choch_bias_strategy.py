@@ -125,6 +125,7 @@ def find_swings(df, n=SWING_N):
 def run_backtest(df, swings, adx):
     hi = df["High"].values
     lo = df["Low"].values
+    cl = df["Close"].values
 
     bias         = "NEUTRAL"
     last_HH      = None   # dict with idx+price
@@ -309,9 +310,10 @@ def run_backtest(df, swings, adx):
         for ci in range(idx + 1, next_sw_idx):
             c_hi = hi[ci]
             c_lo = lo[ci]
+            c_cl = cl[ci]
             c_dt = df.index[ci]
 
-            # Check stop loss on active trade first
+            # ── Stop loss check ──────────────────────────────────────
             if active:
                 if active["direction"] == "LONG" and c_lo <= active["stop_loss"]:
                     close_trade(active, active["stop_loss"], c_dt, "LOSS", "Stop Loss")
@@ -324,7 +326,40 @@ def run_backtest(df, swings, adx):
                     clear_signal()
                     continue
 
-            # Check entry trigger — only when ADX confirms a trend
+            # ── Close-based CHoCH (fixes detection lag) ──────────────
+            # Fire the moment a daily close breaks the structural HL/LH,
+            # rather than waiting N more candles for swing confirmation.
+            if bias == "UPTREND" and last_HL and c_cl < last_HL["price"]:
+                if active and active["direction"] == "LONG":
+                    close_trade(active, c_cl, c_dt, "LOSS",
+                                f"CHoCH Close DN @{c_cl:.0f}")
+                    active = None
+                bias    = "DOWNTREND"
+                lh_ref  = last_HH if last_HH else last_LH
+                ll_apx  = {"idx": ci, "price": c_lo, "date": c_dt}
+                last_LH, last_LL = lh_ref, ll_apx
+                last_HH = last_HL = None
+                clear_signal()
+                if last_LH:
+                    set_short_signal(last_LH, last_LL)
+                continue  # don't enter on the same candle CHoCH fired
+
+            elif bias == "DOWNTREND" and last_LH and c_cl > last_LH["price"]:
+                if active and active["direction"] == "SHORT":
+                    close_trade(active, c_cl, c_dt, "LOSS",
+                                f"CHoCH Close UP @{c_cl:.0f}")
+                    active = None
+                bias    = "UPTREND"
+                hh_apx  = {"idx": ci, "price": c_hi, "date": c_dt}
+                hl_ref  = last_LL if last_LL else last_HL
+                last_HH, last_HL = hh_apx, hl_ref
+                last_LH = last_LL = None
+                clear_signal()
+                if last_HH and last_HL:
+                    set_long_signal(last_HH, last_HL)
+                continue  # don't enter on the same candle CHoCH fired
+
+            # ── Entry trigger — only when ADX confirms a trend ────────
             if sig_direction and not active and adx[ci] > ADX_THRESHOLD:
                 if sig_direction == "LONG" and c_lo <= sig_entry:
                     ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL, "adx_at_entry": round(adx[ci], 1)}
@@ -354,7 +389,7 @@ def print_results(trades):
     shorts = df_t[df_t["direction"] == "SHORT"]
 
     print("\n" + "=" * 60)
-    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6 MULTIPLIER  |  ADX FILTER")
+    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6x  |  ADX  |  CLOSE CHoCH")
     print("=" * 60)
     period = f"{df_t['entry_date'].min().date()} → {df_t['entry_date'].max().date()}"
     print(f"  Period          : {period}")
@@ -410,13 +445,15 @@ def print_results(trades):
      FIX (applied) → Stop is now 0.5 % (STOP_BUFFER) beyond the
            HL/LH level, absorbing normal wick noise before triggering.
 
-  3. CHOCH DETECTION LAG
+  3. CHOCH DETECTION LAG  [APPLIED]
      On daily bars, a CHoCH is confirmed only after the candle closes
      below the HL.  The entry signal for the new direction is then set
      only for the next swing — meaning the first swing of the new
      trend is always missed.
-     FIX → Switch to a lower timeframe (4H/1H) for entry timing
-           while using daily swings for bias.
+     FIX (applied) → Close-based CHoCH now fires the moment a daily
+           candle closes below the structural HL (or above the LH),
+           immediately switching bias and arming the entry signal.
+           No longer waits N extra candles for swing confirmation.
 
   4. EQUAL HIGH / EQUAL LOW AMBIGUITY
      When a new SH exactly equals the prior SH it is not counted as
