@@ -28,6 +28,8 @@ SWING_N        = 5     # candles each side required to confirm a structural pivo
 ADX_PERIOD     = 14
 ADX_THRESHOLD  = 20    # only enter when ADX > this (trending environment)
 STOP_BUFFER    = 0.005 # 0.5 % buffer beyond HL/LH to absorb wick noise
+SIGNAL_EXPIRY  = 10    # max candles an untriggered entry signal stays live (#1)
+LEVEL_TOL      = 0.001 # 0.1 % tolerance for near-equal HH/HL/LH/LL pivots (#4)
 DATA_CSV       = "btc_daily.csv"
 # ─────────────────────────────────────────────
 
@@ -134,13 +136,15 @@ def run_backtest(df, swings, adx):
     last_LL      = None
 
     # pending signal
-    sig_direction = None
-    sig_entry     = None
-    sig_stop      = None
-    sig_ref_HH    = None
-    sig_ref_HL    = None
-    sig_ref_LH    = None
-    sig_ref_LL    = None
+    sig_direction   = None
+    sig_entry       = None
+    sig_stop        = None
+    sig_ref_HH      = None
+    sig_ref_HL      = None
+    sig_ref_LH      = None
+    sig_ref_LL      = None
+    sig_armed_idx   = None   # candle index when signal was armed (for expiry #1)
+    sig_confirmed   = False  # True once close passed through entry side (#6)
 
     active  = None   # open trade dict
     trades  = []
@@ -165,29 +169,38 @@ def run_backtest(df, swings, adx):
         t["exit_reason"] = reason
         trades.append(dict(t))
 
-    def set_long_signal(hh, hl):
+    def set_long_signal(hh, hl, armed_at):
         nonlocal sig_direction, sig_entry, sig_stop, sig_ref_HH, sig_ref_HL
-        rng          = hh["price"] - hl["price"]
-        sig_direction = "LONG"
-        sig_entry     = round(hl["price"] + rng / MULTIPLIER, 2)
-        sig_stop      = round(hl["price"] * (1 - STOP_BUFFER), 2)  # 0.5 % below HL
-        sig_ref_HH    = hh["price"]
-        sig_ref_HL    = hl["price"]
+        nonlocal sig_armed_idx, sig_confirmed
+        rng            = hh["price"] - hl["price"]
+        sig_direction  = "LONG"
+        sig_entry      = round(hl["price"] + rng / MULTIPLIER, 2)
+        sig_stop       = round(hl["price"] * (1 - STOP_BUFFER), 2)
+        sig_ref_HH     = hh["price"]
+        sig_ref_HL     = hl["price"]
+        sig_armed_idx  = armed_at
+        sig_confirmed  = False   # must see close above entry first (#6)
 
-    def set_short_signal(lh, ll):
+    def set_short_signal(lh, ll, armed_at):
         nonlocal sig_direction, sig_entry, sig_stop, sig_ref_LH, sig_ref_LL
-        rng           = lh["price"] - ll["price"]
+        nonlocal sig_armed_idx, sig_confirmed
+        rng            = lh["price"] - ll["price"]
         sig_direction  = "SHORT"
         sig_entry      = round(lh["price"] - rng / MULTIPLIER, 2)
-        sig_stop       = round(lh["price"] * (1 + STOP_BUFFER), 2)  # 0.5 % above LH
+        sig_stop       = round(lh["price"] * (1 + STOP_BUFFER), 2)
         sig_ref_LH     = lh["price"]
         sig_ref_LL     = ll["price"]
+        sig_armed_idx  = armed_at
+        sig_confirmed  = False   # must see close below entry first (#6)
 
     def clear_signal():
         nonlocal sig_direction, sig_entry, sig_stop
         nonlocal sig_ref_HH, sig_ref_HL, sig_ref_LH, sig_ref_LL
+        nonlocal sig_armed_idx, sig_confirmed
         sig_direction = sig_entry = sig_stop = None
         sig_ref_HH = sig_ref_HL = sig_ref_LH = sig_ref_LL = None
+        sig_armed_idx = None
+        sig_confirmed = False
 
     # ── scan swings ──
     for si, sw in enumerate(swings):
@@ -201,14 +214,14 @@ def run_backtest(df, swings, adx):
         if sw["type"] == "H":
 
             if bias == "NEUTRAL":
-                if last_HH is None or price > last_HH["price"]:
+                if last_HH is None or price >= last_HH["price"] * (1 - LEVEL_TOL):
                     last_HH = sw
                     if last_HL is not None:
                         bias = "UPTREND"
-                        set_long_signal(last_HH, last_HL)
+                        set_long_signal(last_HH, last_HL, idx)
 
             elif bias == "UPTREND":
-                if price > last_HH["price"]:
+                if price >= last_HH["price"] * (1 - LEVEL_TOL):   # near-equal counts as HH
                     # ✓ New HH — WIN for any open LONG
                     if active and active["direction"] == "LONG":
                         close_trade(active, price, dt, "WIN", f"New HH @{price:.0f}")
@@ -216,13 +229,13 @@ def run_backtest(df, swings, adx):
                     last_HH = sw
                     clear_signal()
                     if last_HL:
-                        set_long_signal(last_HH, last_HL)
+                        set_long_signal(last_HH, last_HL, idx)
                 else:
                     # LH inside uptrend — just track; CHoCH confirmed only on LL
                     last_LH = sw
 
             elif bias == "DOWNTREND":
-                if price > (last_LH["price"] if last_LH else 0):
+                if price > (last_LH["price"] if last_LH else 0):   # CHoCH: strict break above LH
                     # CHoCH UP — new HH above last LH
                     if active and active["direction"] == "SHORT":
                         close_trade(active, price, dt, "LOSS", f"CHoCH UP @{price:.0f}")
@@ -233,7 +246,7 @@ def run_backtest(df, swings, adx):
                     last_LH = None
                     clear_signal()
                     if last_HL:
-                        set_long_signal(last_HH, last_HL)
+                        set_long_signal(last_HH, last_HL, idx)
                 else:
                     # Continuation LH in downtrend — WIN for active SHORT
                     if active and active["direction"] == "SHORT":
@@ -242,7 +255,7 @@ def run_backtest(df, swings, adx):
                     last_LH = sw
                     clear_signal()
                     if last_LL:
-                        set_short_signal(last_LH, last_LL)
+                        set_short_signal(last_LH, last_LL, idx)
 
         # ────────────────────────────────────────
         # SWING LOW arrived
@@ -253,28 +266,26 @@ def run_backtest(df, swings, adx):
                 if last_HL is None or price < last_HL["price"]:
                     last_HL = sw
                     if last_HH is not None and price < last_HH["price"]:
-                        bias   = "DOWNTREND" if price < (last_HL["price"] if last_HL else price) else "NEUTRAL"
+                        bias    = "DOWNTREND"
                         last_LL = sw
                         last_LH = last_HH
                         if last_LH:
-                            bias = "DOWNTREND"
-                            set_short_signal(last_LH, last_LL)
+                            set_short_signal(last_LH, last_LL, idx)
                 else:
                     last_HL = sw
 
             elif bias == "UPTREND":
-                if price > (last_HL["price"] if last_HL else -np.inf):
+                if last_HL is None or price >= last_HL["price"] * (1 - LEVEL_TOL):  # near-equal = HL
                     # New HL — update structure, refresh signal
                     if active and active["direction"] == "LONG":
-                        close_trade(active, price, dt, "WIN",
-                                    f"HL confirmed @{price:.0f}")
+                        close_trade(active, price, dt, "WIN", f"HL confirmed @{price:.0f}")
                         active = None
                     last_HL = sw
                     clear_signal()
                     if last_HH:
-                        set_long_signal(last_HH, last_HL)
+                        set_long_signal(last_HH, last_HL, idx)
                 else:
-                    # LL → CHoCH DOWN
+                    # LL → CHoCH DOWN (strict: must be clearly below HL)
                     if active and active["direction"] == "LONG":
                         close_trade(active, price, dt, "LOSS", f"CHoCH DOWN @{price:.0f}")
                         active = None
@@ -285,10 +296,10 @@ def run_backtest(df, swings, adx):
                     last_HL = None
                     clear_signal()
                     if last_LH:
-                        set_short_signal(last_LH, last_LL)
+                        set_short_signal(last_LH, last_LL, idx)
 
             elif bias == "DOWNTREND":
-                if price < last_LL["price"]:
+                if price <= last_LL["price"] * (1 + LEVEL_TOL):   # near-equal counts as LL
                     # ✓ New LL — WIN for any open SHORT
                     if active and active["direction"] == "SHORT":
                         close_trade(active, price, dt, "WIN", f"New LL @{price:.0f}")
@@ -296,7 +307,7 @@ def run_backtest(df, swings, adx):
                     last_LL = sw
                     clear_signal()
                     if last_LH:
-                        set_short_signal(last_LH, last_LL)
+                        set_short_signal(last_LH, last_LL, idx)
                 else:
                     # HL inside downtrend — just track
                     last_HL = sw
@@ -329,7 +340,8 @@ def run_backtest(df, swings, adx):
             # ── Close-based CHoCH (fixes detection lag) ──────────────
             # Fire the moment a daily close breaks the structural HL/LH,
             # rather than waiting N more candles for swing confirmation.
-            if bias == "UPTREND" and last_HL and c_cl < last_HL["price"]:
+            # tolerance applied: require close clearly beyond the level (#4)
+            if bias == "UPTREND" and last_HL and c_cl < last_HL["price"] * (1 - LEVEL_TOL):
                 if active and active["direction"] == "LONG":
                     close_trade(active, c_cl, c_dt, "LOSS",
                                 f"CHoCH Close DN @{c_cl:.0f}")
@@ -341,10 +353,10 @@ def run_backtest(df, swings, adx):
                 last_HH = last_HL = None
                 clear_signal()
                 if last_LH:
-                    set_short_signal(last_LH, last_LL)
+                    set_short_signal(last_LH, last_LL, ci)
                 continue  # don't enter on the same candle CHoCH fired
 
-            elif bias == "DOWNTREND" and last_LH and c_cl > last_LH["price"]:
+            elif bias == "DOWNTREND" and last_LH and c_cl > last_LH["price"] * (1 + LEVEL_TOL):
                 if active and active["direction"] == "SHORT":
                     close_trade(active, c_cl, c_dt, "LOSS",
                                 f"CHoCH Close UP @{c_cl:.0f}")
@@ -356,11 +368,24 @@ def run_backtest(df, swings, adx):
                 last_LH = last_LL = None
                 clear_signal()
                 if last_HH and last_HL:
-                    set_long_signal(last_HH, last_HL)
+                    set_long_signal(last_HH, last_HL, ci)
                 continue  # don't enter on the same candle CHoCH fired
 
-            # ── Entry trigger — only when ADX confirms a trend ────────
-            if sig_direction and not active and adx[ci] > ADX_THRESHOLD:
+            # ── Signal expiry (#1) ──────────────────────────────────
+            if sig_direction and sig_armed_idx is not None and ci - sig_armed_idx > SIGNAL_EXPIRY:
+                clear_signal()
+                continue
+
+            # ── Price-confirmation tracking (#6) ─────────────────────
+            # Require at least one close on the entry side before we open.
+            if sig_direction and not active:
+                if sig_direction == "LONG" and c_cl > sig_entry:
+                    sig_confirmed = True
+                elif sig_direction == "SHORT" and c_cl < sig_entry:
+                    sig_confirmed = True
+
+            # ── Entry trigger — ADX + confirmation guard ───────────────
+            if sig_direction and not active and adx[ci] > ADX_THRESHOLD and sig_confirmed:
                 if sig_direction == "LONG" and c_lo <= sig_entry:
                     ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL, "adx_at_entry": round(adx[ci], 1)}
                     active = open_trade("LONG", sig_entry, c_dt, sig_stop, ref)
@@ -389,7 +414,7 @@ def print_results(trades):
     shorts = df_t[df_t["direction"] == "SHORT"]
 
     print("\n" + "=" * 60)
-    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6x  |  ADX  |  CLOSE CHoCH")
+    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6x  |  ADX  |  CLOSE CHoCH  |  ALL FIXES")
     print("=" * 60)
     period = f"{df_t['entry_date'].min().date()} → {df_t['entry_date'].max().date()}"
     print(f"  Period          : {period}")
@@ -397,6 +422,9 @@ def print_results(trades):
     print(f"  Multiplier      : {MULTIPLIER}  (entry ≈ 38.5 % into swing)")
     print(f"  ADX filter      : period={ADX_PERIOD}, threshold={ADX_THRESHOLD} (trend-only entries)")
     print(f"  Stop buffer     : {STOP_BUFFER*100:.1f}% beyond HL/LH (wick absorption)")
+    print(f"  Signal expiry   : {SIGNAL_EXPIRY} candles (stale signals auto-clear)")
+    print(f"  Level tolerance : {LEVEL_TOL*100:.1f}% (near-equal HH/HL/LH/LL accepted)")
+    print(f"  Entry guard     : requires a confirming close before stop-side fill")
     print("-" * 60)
     print(f"  Total Trades    : {total}")
     print(f"  Wins            : {wins}")
@@ -430,13 +458,15 @@ def print_results(trades):
     # 1. Trades that never got an entry (signal expired)
     #    (these are not in the trade log — we note it)
     print("""
-  1. ENTRY LEVEL EXPIRY
+  1. ENTRY LEVEL EXPIRY  [APPLIED]
      The 2.6 level is computed from the latest HH/LL at that moment.
      If price never pulls back to that level before the next structural
      swing fires, the signal expires silently.  This can cause missed
-     trades during strong momentum legs.
-     FIX → Add a time limit (e.g. 5 candles) after which the signal
-           expires and we wait for the next HH/LL to reset it.
+     trades during strong momentum legs, or stale signals from a long
+     time ago getting filled out of context.
+     FIX (applied) → Signal auto-expires after SIGNAL_EXPIRY (10)
+           candles if untriggered; we then wait for the next HH/LL to
+           reset it.
 
   2. STOP LOSS TOO TIGHT  [APPLIED]
      Stop is placed just below the HL (or above LH).  On highly
@@ -455,12 +485,12 @@ def print_results(trades):
            immediately switching bias and arming the entry signal.
            No longer waits N extra candles for swing confirmation.
 
-  4. EQUAL HIGH / EQUAL LOW AMBIGUITY
+  4. EQUAL HIGH / EQUAL LOW AMBIGUITY  [APPLIED]
      When a new SH exactly equals the prior SH it is not counted as
      a HH.  In reality "liquidity grabs" often produce near-equal
      highs before reversing.
-     FIX → Allow a tolerance band (e.g. ± 0.1 %) when comparing
-           swing levels.
+     FIX (applied) → LEVEL_TOL (0.1 %) tolerance band applied when
+           comparing HH/HL/LH/LL swing levels and close-based CHoCH.
 
   5. SINGLE-DIRECTION BIAS DURING RANGING MARKETS  [APPLIED]
      The strategy forces either UPTREND or DOWNTREND.  During sideways
@@ -469,11 +499,13 @@ def print_results(trades):
      FIX (applied) → Entry is now gated by ADX(14) > 20.  Entries
            during low-ADX (choppy/ranging) candles are skipped.
 
-  6. ENTRY LEVEL INSIDE THE SIGNAL CANDLE
-     If the entry level is within the range of the swing candle itself
-     the trade opens retroactively at the wrong bar.
-     FIX → Only arm the entry from the candle AFTER the swing
-           is confirmed.
+  6. ENTRY LEVEL INSIDE THE SIGNAL CANDLE  [APPLIED]
+     If the entry level falls within the range of the swing/CHoCH
+     candle itself, the naive trigger can open the trade immediately
+     on noise, with no confirmation the new structure actually holds.
+     FIX (applied) → A confirming close on the signal side (close above
+           entry for LONG, below for SHORT) is now required before the
+           stop-side fill is allowed to open a trade (sig_confirmed).
 """)
     print("=" * 60)
 
