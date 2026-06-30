@@ -27,6 +27,7 @@ MULTIPLIER     = 2.6
 SWING_N        = 5     # candles each side required to confirm a structural pivot
 ADX_PERIOD     = 14
 ADX_THRESHOLD  = 20    # only enter when ADX > this (trending environment)
+STOP_BUFFER    = 0.005 # 0.5 % buffer beyond HL/LH to absorb wick noise
 DATA_CSV       = "btc_daily.csv"
 # ─────────────────────────────────────────────
 
@@ -168,7 +169,7 @@ def run_backtest(df, swings, adx):
         rng          = hh["price"] - hl["price"]
         sig_direction = "LONG"
         sig_entry     = round(hl["price"] + rng / MULTIPLIER, 2)
-        sig_stop      = round(hl["price"] * 0.9985, 2)   # just below HL
+        sig_stop      = round(hl["price"] * (1 - STOP_BUFFER), 2)  # 0.5 % below HL
         sig_ref_HH    = hh["price"]
         sig_ref_HL    = hl["price"]
 
@@ -177,7 +178,7 @@ def run_backtest(df, swings, adx):
         rng           = lh["price"] - ll["price"]
         sig_direction  = "SHORT"
         sig_entry      = round(lh["price"] - rng / MULTIPLIER, 2)
-        sig_stop       = round(lh["price"] * 1.0015, 2)  # just above LH
+        sig_stop       = round(lh["price"] * (1 + STOP_BUFFER), 2)  # 0.5 % above LH
         sig_ref_LH     = lh["price"]
         sig_ref_LL     = ll["price"]
 
@@ -360,6 +361,7 @@ def print_results(trades):
     print(f"  Swing lookback  : {SWING_N} candles each side")
     print(f"  Multiplier      : {MULTIPLIER}  (entry ≈ 38.5 % into swing)")
     print(f"  ADX filter      : period={ADX_PERIOD}, threshold={ADX_THRESHOLD} (trend-only entries)")
+    print(f"  Stop buffer     : {STOP_BUFFER*100:.1f}% beyond HL/LH (wick absorption)")
     print("-" * 60)
     print(f"  Total Trades    : {total}")
     print(f"  Wins            : {wins}")
@@ -401,12 +403,12 @@ def print_results(trades):
      FIX → Add a time limit (e.g. 5 candles) after which the signal
            expires and we wait for the next HH/LL to reset it.
 
-  2. STOP LOSS TOO TIGHT
+  2. STOP LOSS TOO TIGHT  [APPLIED]
      Stop is placed just below the HL (or above LH).  On highly
      volatile assets like BTC, wicks can pierce the HL without a real
      CHoCH, causing unnecessary losses.
-     FIX → Add a small buffer (e.g. 0.5 % below HL) or use a
-           candle-close stop instead of an intra-candle wick stop.
+     FIX (applied) → Stop is now 0.5 % (STOP_BUFFER) beyond the
+           HL/LH level, absorbing normal wick noise before triggering.
 
   3. CHOCH DETECTION LAG
      On daily bars, a CHoCH is confirmed only after the candle closes
