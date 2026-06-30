@@ -1,350 +1,393 @@
 //@version=5
-// ═══════════════════════════════════════════════════════════════════════════
-// ALL THREE SIGNALS COMBINED — BC-v1 · BC-v2 · Cycle Sine
-// Paste this ONE script. One indicator() declaration, three signal layers.
+// HOW TO LOAD THIS IN TRADINGVIEW:
+// 1. Open Pine Editor (bottom of screen)
+// 2. Click the dropdown arrow next to "Open" -> "New script"
+//    (this gives you a blank editor with just the default indicator() stub)
+// 3. Select ALL (Ctrl+A on Windows, Cmd+A on Mac)
+// 4. DELETE (Backspace or Delete key)
+// 5. PASTE this entire file
+// 6. Click "Add to chart"
 //
-// Strategy #3 — BC-v1  : wick-touch arrows  (orange, structural SL)
-// Strategy #4 — BC-v2  : close-confirm arrows (green/red, 61.8/161.8%)
-// Strategy #6 — Cycle  : DFT turning-point diamonds (cyan/magenta)
+// If you skip steps 3-4 you will get CE10243 (two declarations).
 //
-// For actual P&L backtesting, use bc_v2_swing_breakout.pine separately.
-// ═══════════════════════════════════════════════════════════════════════════
-indicator("BC-v1 · BC-v2 · Cycle Signals", shorttitle="BC123+Cyc",
-     overlay=true, max_labels_count=500, max_lines_count=500)
+// BC-v1 (orange triangles) : wick-touch breakout, SL at leg origin
+// BC-v2 (green/red triangles): CLOSE-confirmed entry, 61.8% SL, 161.8% TP  <-- validated
+// Cycle (cyan/magenta diamonds): DFT dominant-cycle turning points
+// ============================================================
+indicator(title="BC-v1 v2 Cycle Signals", shorttitle="BCvCyc", overlay=true,
+     max_lines_count=200, max_labels_count=200)
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── INPUT GROUPS ───────────────────────────────────────────────────────────
-// ════════════════════════════════════════════════════════════════════════════
-var string GZ  = "Zig-Zag"
-zz_pct_v1 = input.float(8.0, "BC-v1 ZZ Threshold %", minval=1.0, maxval=30.0, step=0.5, group=GZ) / 100
-zz_pct_v2 = input.float(5.0, "BC-v2 ZZ Threshold %", minval=1.0, maxval=30.0, step=0.5,
-     tooltip="5% is the walk-forward validated setting", group=GZ) / 100
-brk_buf    = input.float(0.20, "Breakout Buffer %",  minval=0.0, maxval=2.0, step=0.05, group=GZ) / 100
+// ============================================================
+// INPUTS
+// ============================================================
+i_zz1      = input.float(8.0,  "BC-v1 ZZ %",          minval=1.0, maxval=30.0, step=0.5, group="Zig-Zag") / 100
+i_zz2      = input.float(5.0,  "BC-v2 ZZ % (validated)", minval=1.0, maxval=30.0, step=0.5, group="Zig-Zag") / 100
+i_buf      = input.float(0.20, "Breakout Buffer %",    minval=0.0, maxval=2.0,  step=0.05, group="Zig-Zag") / 100
+i_sl       = input.float(61.8, "v2 SL Giveback %",     minval=20.0, maxval=100.0, step=1.0, group="BC-v2") / 100
+i_tp       = input.float(161.8,"v2 TP Extension %",    minval=100.0, maxval=300.0, step=1.0, group="BC-v2") / 100
+i_fw       = input.int(120,    "Cycle Fit Window",     minval=30, maxval=300, group="Cycle DFT")
+i_sma      = input.int(50,     "Cycle Detrend SMA",    minval=10, maxval=200, group="Cycle DFT")
+i_minT     = input.int(10,     "Cycle Min Period",     minval=3,  maxval=50,  group="Cycle DFT")
+i_maxT     = input.int(60,     "Cycle Max Period",     minval=10, maxval=200, group="Cycle DFT")
+i_mom      = input.int(3,      "Cycle Momentum Bars",  minval=1,  maxval=10,  group="Cycle DFT")
+i_slbuf    = input.float(2.0,  "Cycle SL Buffer %",    minval=0.1, maxval=10.0, step=0.1, group="Cycle DFT") / 100
+i_tpamp    = input.float(1.0,  "Cycle TP x Amplitude", minval=0.25, maxval=5.0, step=0.25, group="Cycle DFT")
+i_showzz   = input.bool(true,  "Draw Zig-Zag Lines",   group="Display")
+i_showlvl  = input.bool(true,  "Show v2 Levels",       group="Display")
+i_showtbl  = input.bool(true,  "Show Table",           group="Display")
 
-var string GV  = "BC-v2 Levels"
-sl_frac    = input.float(61.8, "v2 SL Giveback %",  minval=20.0, maxval=100.0, step=1.0, group=GV) / 100
-tp_ext     = input.float(161.8,"v2 TP Extension %", minval=100.0, maxval=300.0, step=1.0, group=GV) / 100
+// ============================================================
+// ZIG-ZAG ENGINE  (two independent instances: v1 and v2 thresholds)
+// Returns: new pivot flags and current leg parameters
+// ============================================================
 
-var string GC  = "Cycle DFT"
-fit_win    = input.int(120, "Fit Window (bars)",    minval=30,  maxval=300, group=GC)
-sma_per    = input.int(50,  "Detrend SMA Period",   minval=10,  maxval=200, group=GC)
-min_T      = input.int(10,  "Min Period",           minval=3,   maxval=50,  group=GC)
-max_T      = input.int(60,  "Max Period",           minval=10,  maxval=200, group=GC)
-mom_bars   = input.int(3,   "Momentum Lookback",    minval=1,   maxval=10,  group=GC)
-sl_buf_cyc = input.float(2.0,"Cycle SL Buffer %",  minval=0.1, maxval=10.0, step=0.1, group=GC) / 100
-tp_amp     = input.float(1.0,"Cycle TP × Amplitude",minval=0.25, maxval=5.0, step=0.25, group=GC)
+// --- v1 ZZ (8% default) ---
+var float zrh1  = high
+var float zrl1  = low
+var int   zrhb1 = bar_index
+var int   zrlb1 = bar_index
+var bool  zsh1  = true
+var float zph1  = na
+var float zpl1  = na
+var int   zphb1 = na
+var int   zplb1 = na
+var float zlo1  = na
+var float zlp1  = na
+var bool  zll1  = false
+var bool  zact1 = false
 
-var string GD  = "Display"
-show_zz    = input.bool(true,  "Draw Zig-Zag Lines",     group=GD)
-show_v2    = input.bool(true,  "Show v2 Entry/SL/TP",    group=GD)
-show_cyc   = input.bool(true,  "Show Cycle Wave Label",   group=GD)
-show_tbl   = input.bool(true,  "Show Info Table",         group=GD)
+bool znph1 = false
+bool znpl1 = false
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── SHARED ZIG-ZAG ENGINE (runs twice: once for v1 threshold, once for v2)
-// ════════════════════════════════════════════════════════════════════════════
-// Pine Script functions can't capture var state cleanly in loops,
-// so we unroll two independent zig-zag engines side by side.
-
-// ── ZZ for BC-v1 (default 8%) ───────────────────────────────────────────────
-var float rh1 = high;  var float rl1 = low
-var int   rhb1 = bar_index;  var int rlb1 = bar_index
-var bool  sh1  = true
-var float ph1  = na;  var int phb1 = na
-var float pl1  = na;  var int plb1 = na
-var float lo1  = na;  var float lp1 = na;  var bool ll1 = false
-
-bool nph1 = false;  bool npl1 = false
-
-if sh1
-    if high > rh1
-        rh1 := high;  rhb1 := bar_index
-    if close < rh1 * (1.0 - zz_pct_v1)
-        if show_zz and not na(pl1)
-            line.new(plb1, pl1, rhb1, rh1, color=color.new(color.teal, 50), width=1, style=line.style_dotted)
-        if not na(pl1)
-            lo1 := pl1;  lp1 := rh1;  ll1 := true
-        ph1 := rh1;  phb1 := rhb1;  nph1 := true
-        sh1 := false;  rl1 := low;  rlb1 := bar_index
+if zsh1
+    if high > zrh1
+        zrh1  := high
+        zrhb1 := bar_index
+    if close < zrh1 * (1.0 - i_zz1)
+        if i_showzz and not na(zpl1)
+            line.new(zplb1, zpl1, zrhb1, zrh1, color=color.new(color.teal, 65), width=1, style=line.style_dotted)
+        if not na(zpl1)
+            zlo1 := zpl1
+            zlp1 := zrh1
+            zll1 := true
+            zact1 := true
+        zph1  := zrh1
+        zphb1 := zrhb1
+        znph1 := true
+        zsh1  := false
+        zrl1  := low
+        zrlb1 := bar_index
 else
-    if low < rl1
-        rl1 := low;  rlb1 := bar_index
-    if close > rl1 * (1.0 + zz_pct_v1)
-        if show_zz and not na(ph1)
-            line.new(phb1, ph1, rlb1, rl1, color=color.new(color.orange, 50), width=1, style=line.style_dotted)
-        if not na(ph1)
-            lo1 := ph1;  lp1 := rl1;  ll1 := false
-        pl1 := rl1;  plb1 := rlb1;  npl1 := true
-        sh1 := true;  rh1 := high;  rhb1 := bar_index
+    if low < zrl1
+        zrl1  := low
+        zrlb1 := bar_index
+    if close > zrl1 * (1.0 + i_zz1)
+        if i_showzz and not na(zph1)
+            line.new(zphb1, zph1, zrlb1, zrl1, color=color.new(color.orange, 65), width=1, style=line.style_dotted)
+        if not na(zph1)
+            zlo1 := zph1
+            zlp1 := zrl1
+            zll1 := false
+            zact1 := true
+        zpl1  := zrl1
+        zplb1 := zrlb1
+        znpl1 := true
+        zsh1  := true
+        zrh1  := high
+        zrhb1 := bar_index
 
-// ── ZZ for BC-v2 (default 5%) ───────────────────────────────────────────────
-var float rh2 = high;  var float rl2 = low
-var int   rhb2 = bar_index;  var int rlb2 = bar_index
-var bool  sh2  = true
-var float ph2  = na;  var int phb2 = na
-var float pl2  = na;  var int plb2 = na
-var float lo2  = na;  var float lp2 = na;  var bool ll2 = false
+// --- v2 ZZ (5% default) ---
+var float zrh2  = high
+var float zrl2  = low
+var int   zrhb2 = bar_index
+var int   zrlb2 = bar_index
+var bool  zsh2  = true
+var float zph2  = na
+var float zpl2  = na
+var int   zphb2 = na
+var int   zplb2 = na
+var float zlo2  = na
+var float zlp2  = na
+var bool  zll2  = false
 
-bool nph2 = false;  bool npl2 = false
+bool znph2 = false
+bool znpl2 = false
 
-if sh2
-    if high > rh2
-        rh2 := high;  rhb2 := bar_index
-    if close < rh2 * (1.0 - zz_pct_v2)
-        if show_zz and not na(pl2)
-            line.new(plb2, pl2, rhb2, rh2, color=color.new(color.teal, 20), width=2)
-        if not na(pl2)
-            lo2 := pl2;  lp2 := rh2;  ll2 := true
-        ph2 := rh2;  phb2 := rhb2;  nph2 := true
-        sh2 := false;  rl2 := low;  rlb2 := bar_index
+if zsh2
+    if high > zrh2
+        zrh2  := high
+        zrhb2 := bar_index
+    if close < zrh2 * (1.0 - i_zz2)
+        if i_showzz and not na(zpl2)
+            line.new(zplb2, zpl2, zrhb2, zrh2, color=color.new(color.teal, 20), width=2)
+        if not na(zpl2)
+            zlo2 := zpl2
+            zlp2 := zrh2
+            zll2 := true
+        zph2  := zrh2
+        zphb2 := zrhb2
+        znph2 := true
+        zsh2  := false
+        zrl2  := low
+        zrlb2 := bar_index
 else
-    if low < rl2
-        rl2 := low;  rlb2 := bar_index
-    if close > rl2 * (1.0 + zz_pct_v2)
-        if show_zz and not na(ph2)
-            line.new(phb2, ph2, rlb2, rl2, color=color.new(color.red, 20), width=2)
-        if not na(ph2)
-            lo2 := ph2;  lp2 := rl2;  ll2 := false
-        pl2 := rl2;  plb2 := rlb2;  npl2 := true
-        sh2 := true;  rh2 := high;  rhb2 := bar_index
+    if low < zrl2
+        zrl2  := low
+        zrlb2 := bar_index
+    if close > zrl2 * (1.0 + i_zz2)
+        if i_showzz and not na(zph2)
+            line.new(zphb2, zph2, zrlb2, zrl2, color=color.new(color.red, 20), width=2)
+        if not na(zph2)
+            zlo2 := zph2
+            zlp2 := zrl2
+            zll2 := false
+        zpl2  := zrl2
+        zplb2 := zrlb2
+        znpl2 := true
+        zsh2  := true
+        zrh2  := high
+        zrhb2 := bar_index
 
 // Pivot labels on v2 ZZ
-if show_zz
-    if nph2
-        label.new(phb2, ph2, "H", style=label.style_label_down,
+if i_showzz
+    if znph2
+        label.new(zphb2, zph2, "H", style=label.style_label_down,
              color=color.new(color.teal, 40), textcolor=color.white, size=size.tiny)
-    if npl2
-        label.new(plb2, pl2, "L", style=label.style_label_up,
+    if znpl2
+        label.new(zplb2, zpl2, "L", style=label.style_label_up,
              color=color.new(color.red, 40), textcolor=color.white, size=size.tiny)
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── BC-v1 SIGNAL : wick touches breakout level
-// ════════════════════════════════════════════════════════════════════════════
-var float v1_entry = na;  var float v1_sl = na;  var float v1_tp = na
-var bool  v1_long  = false;  var bool v1_active = false
+// ============================================================
+// BC-v1 SIGNAL: wick touches breakout level
+// ============================================================
+var float v1e  = na
+var float v1sl = na
+var float v1tp = na
+var bool  v1lg = false
 
-if nph1 or npl1
-    if not na(lo1) and not na(lp1)
-        float rng = math.abs(lp1 - lo1)
-        if ll1
-            v1_entry := lp1 * (1.0 + brk_buf)
-            v1_sl    := lo1
-            v1_tp    := v1_entry + rng
-            v1_long  := true
+if znph1 or znpl1
+    if not na(zlo1) and not na(zlp1)
+        float rng = math.abs(zlp1 - zlo1)
+        if zll1
+            v1e  := zlp1 * (1.0 + i_buf)
+            v1sl := zlo1
+            v1tp := v1e + rng
+            v1lg := true
         else
-            v1_entry := lp1 * (1.0 - brk_buf)
-            v1_sl    := lo1
-            v1_tp    := v1_entry - rng
-            v1_long  := false
-        v1_active := true
+            v1e  := zlp1 * (1.0 - i_buf)
+            v1sl := zlo1
+            v1tp := v1e - rng
+            v1lg := false
+        zact1 := true
 
-// Fire on wick touch (v1 rule)
-bool v1_long_sig  = v1_active and v1_long  and high >= v1_entry
-bool v1_short_sig = v1_active and not v1_long and low <= v1_entry
+bool v1_long  = zact1 and v1lg  and high >= v1e
+bool v1_short = zact1 and not v1lg and low  <= v1e
 
-if v1_long_sig or v1_short_sig
-    v1_active := false   // one shot per leg
+if v1_long or v1_short
+    zact1 := false
 
-// Cancel on new pivot
-if nph1 or npl1
-    v1_active := true   // re-arm only after we compute the new setup above
+// ============================================================
+// BC-v2 SIGNAL: close confirmation, entry at next bar open
+// ============================================================
+var float v2e   = na
+var float v2sl  = na
+var float v2tp  = na
+var bool  v2lg  = false
+var bool  v2cfm = false
+var bool  v2cfl = false
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── BC-v2 SIGNAL : CLOSE confirmation → entry at next bar open
-// ════════════════════════════════════════════════════════════════════════════
-var float v2_entry = na;  var float v2_sl = na;  var float v2_tp = na
-var bool  v2_long  = false;  var bool v2_wait = false
-
-if nph2 or npl2
-    if not na(lo2) and not na(lp2)
-        float rng = math.abs(lp2 - lo2)
-        if ll2
-            v2_entry := lp2 * (1.0 + brk_buf)
-            v2_sl    := v2_entry - sl_frac * rng
-            v2_tp    := v2_entry + tp_ext  * rng
-            v2_long  := true
+if znph2 or znpl2
+    if not na(zlo2) and not na(zlp2)
+        float rng = math.abs(zlp2 - zlo2)
+        if zll2
+            v2e  := zlp2 * (1.0 + i_buf)
+            v2sl := v2e - i_sl * rng
+            v2tp := v2e + i_tp * rng
+            v2lg := true
         else
-            v2_entry := lp2 * (1.0 - brk_buf)
-            v2_sl    := v2_entry + sl_frac * rng
-            v2_tp    := v2_entry - tp_ext  * rng
-            v2_long  := false
-        v2_wait := false  // need fresh confirmation
+            v2e  := zlp2 * (1.0 - i_buf)
+            v2sl := v2e + i_sl * rng
+            v2tp := v2e - i_tp * rng
+            v2lg := false
+        v2cfm := false
 
-// Close confirmation check
-var bool v2_confirmed = false
-var bool v2_conf_long = false
+if not v2cfm and not na(v2e)
+    if v2lg  and close >= v2e
+        v2cfm := true
+        v2cfl := true
+    if not v2lg and close <= v2e
+        v2cfm := true
+        v2cfl := false
 
-if not v2_confirmed and not na(v2_entry)
-    if v2_long  and close >= v2_entry
-        v2_confirmed := true;  v2_conf_long := true
-    if not v2_long and close <= v2_entry
-        v2_confirmed := true;  v2_conf_long := false
+if znph2 or znpl2
+    v2cfm := false
 
-// Cancel on new pivot
-if nph2 or npl2
-    v2_confirmed := false
+bool v2_long  = v2cfm[1] and v2cfl[1]
+bool v2_short = v2cfm[1] and not v2cfl[1]
 
-// Actual signal fires on next bar's open (simulated here as signal on the open bar)
-bool v2_long_sig  = v2_confirmed[1] and v2_conf_long[1]
-bool v2_short_sig = v2_confirmed[1] and not v2_conf_long[1]
+if v2_long or v2_short
+    v2cfm := false
 
-if v2_long_sig or v2_short_sig
-    v2_confirmed := false
+// Draw v2 levels
+var line ln_e  = na
+var line ln_sl = na
+var line ln_tp = na
 
-// ── Draw v2 setup levels ─────────────────────────────────────────────────────
-var line ln_en = na;  var line ln_sl2 = na;  var line ln_tp2 = na
-
-if show_v2 and not na(v2_entry)
-    line.delete(ln_en);  line.delete(ln_sl2);  line.delete(ln_tp2)
-    ln_en  := line.new(bar_index - 3, v2_entry, bar_index, v2_entry,
+if i_showlvl and not na(v2e)
+    line.delete(ln_e)
+    line.delete(ln_sl)
+    line.delete(ln_tp)
+    ln_e  := line.new(bar_index - 3, v2e,  bar_index, v2e,
          color=color.new(color.yellow, 10), style=line.style_dotted, width=2, extend=extend.right)
-    ln_sl2 := line.new(bar_index - 3, v2_sl, bar_index, v2_sl,
+    ln_sl := line.new(bar_index - 3, v2sl, bar_index, v2sl,
          color=color.new(color.red, 15), style=line.style_dashed, width=1, extend=extend.right)
-    ln_tp2 := line.new(bar_index - 3, v2_tp, bar_index, v2_tp,
+    ln_tp := line.new(bar_index - 3, v2tp, bar_index, v2tp,
          color=color.new(color.lime, 15), style=line.style_dashed, width=1, extend=extend.right)
 
-// Confirmation bar highlight
-bgcolor(v2_confirmed and not na(v2_entry) ? color.new(color.yellow, 90) : na,
-     title="v2 Confirmation Bar")
+bgcolor(v2cfm and not na(v2e) ? color.new(color.yellow, 90) : na, title="v2 Confirm")
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── CYCLE / DFT SIGNAL
-// ════════════════════════════════════════════════════════════════════════════
-float cy_T     = na;  float cy_amp = na
-float cy_deriv = na;  float cy_prev_deriv = na
+// ============================================================
+// CYCLE DFT SIGNAL
+// ============================================================
+var float cT   = na
+var float cAmp = na
+var float cDer = na
+var float cPDr = na
 
-if barstate.isconfirmed and bar_index >= fit_win + sma_per
-    float[] xt = array.new_float(fit_win, 0.0)
-    for i = 0 to fit_win - 1
-        array.set(xt, i, close[i] - ta.sma(close, sma_per)[i])
+if barstate.isconfirmed and bar_index >= i_fw + i_sma
+    float[] xt = array.new_float(i_fw, 0.0)
+    for i = 0 to i_fw - 1
+        array.set(xt, i, close[i] - ta.sma(close, i_sma)[i])
 
-    float bp = 0.0;  float bT = float(min_T);  float ba = 0.0;  float bb = 0.0
-    for T = min_T to max_T
-        float aT = 0.0;  float bT2 = 0.0
-        float Tf = float(T);  float Wf = float(fit_win)
-        for t = 0 to fit_win - 1
-            float angle = 2.0 * math.pi * float(t) / Tf
-            float x     = array.get(xt, fit_win - 1 - t)
-            aT += x * math.cos(angle)
-            bT2 += x * math.sin(angle)
-        aT := 2.0 * aT / Wf;  bT2 := 2.0 * bT2 / Wf
-        float pw = aT * aT + bT2 * bT2
+    float bp  = 0.0
+    float bTf = float(i_minT)
+    float bA  = 0.0
+    float bB  = 0.0
+
+    for T = i_minT to i_maxT
+        float Tf = float(T)
+        float Wf = float(i_fw)
+        float aT = 0.0
+        float bT = 0.0
+        for t = 0 to i_fw - 1
+            float ang = 2.0 * math.pi * float(t) / Tf
+            float x   = array.get(xt, i_fw - 1 - t)
+            aT := aT + x * math.cos(ang)
+            bT := bT + x * math.sin(ang)
+        aT := 2.0 * aT / Wf
+        bT := 2.0 * bT / Wf
+        float pw = aT * aT + bT * bT
         if pw > bp
-            bp := pw;  bT := Tf;  ba := aT;  bb := bT2
+            bp  := pw
+            bTf := Tf
+            bA  := aT
+            bB  := bT
 
-    cy_T   := bT
-    cy_amp := math.sqrt(ba * ba + bb * bb)
-    float w = 2.0 * math.pi / bT
-    cy_deriv      := -ba * w * math.sin(w * float(fit_win - 1)) + bb * w * math.cos(w * float(fit_win - 1))
-    cy_prev_deriv := -ba * w * math.sin(w * float(fit_win - 2)) + bb * w * math.cos(w * float(fit_win - 2))
+    float w    = 2.0 * math.pi / bTf
+    float tCur = float(i_fw - 1)
+    float tPrv = float(i_fw - 2)
+    cT   := bTf
+    cAmp := math.sqrt(bA * bA + bB * bB)
+    cDer := -bA * w * math.sin(w * tCur) + bB * w * math.cos(w * tCur)
+    cPDr := -bA * w * math.sin(w * tPrv) + bB * w * math.cos(w * tPrv)
 
-var float vT  = na;  var float vAmp = na
-var float vD  = na;  var float vPD  = na
+var float vcT   = na
+var float vcAmp = na
+var float vcDer = na
+var float vcPDr = na
 
-if not na(cy_T)
-    vT  := cy_T;  vAmp := cy_amp;  vD := cy_deriv;  vPD := cy_prev_deriv
+if not na(cT)
+    vcT   := cT
+    vcAmp := cAmp
+    vcDer := cDer
+    vcPDr := cPDr
 
-bool cy_cross_up   = not na(vD) and not na(vPD) and vD >= 0 and vPD < 0
-bool cy_cross_down = not na(vD) and not na(vPD) and vD <= 0 and vPD > 0
-bool cy_long  = cy_cross_up   and close > close[mom_bars]
-bool cy_short = cy_cross_down and close < close[mom_bars]
+bool cy_up   = not na(vcDer) and not na(vcPDr) and vcDer >= 0.0 and vcPDr < 0.0
+bool cy_down = not na(vcDer) and not na(vcPDr) and vcDer <= 0.0 and vcPDr > 0.0
+bool cy_long  = cy_up   and close > close[i_mom]
+bool cy_short = cy_down and close < close[i_mom]
 
-float cy_sl_l = ta.lowest(low,  20) * (1.0 - sl_buf_cyc)
-float cy_sl_s = ta.highest(high, 20) * (1.0 + sl_buf_cyc)
-float cy_tp_l = not na(vAmp) ? close + vAmp * tp_amp : na
-float cy_tp_s = not na(vAmp) ? close - vAmp * tp_amp : na
+float cy_sl_l = ta.lowest(low,   20) * (1.0 - i_slbuf)
+float cy_sl_s = ta.highest(high, 20) * (1.0 + i_slbuf)
+float cy_tp_l = not na(vcAmp) ? close + vcAmp * i_tpamp : na
+float cy_tp_s = not na(vcAmp) ? close - vcAmp * i_tpamp : na
 
-// Cycle dominant period label
-if show_cyc and barstate.islast and not na(vT)
-    label.new(bar_index, high * 1.002,
-         "Cycle T=" + str.tostring(vT, "#") + "b  A=" + str.tostring(vAmp, "#.0"),
-         style=label.style_label_down, color=color.new(color.navy, 50),
+if barstate.islast and not na(vcT)
+    label.new(bar_index, high,
+         "Cycle T=" + str.tostring(vcT, "#") + "  A=" + str.tostring(vcAmp, "#.0"),
+         style=label.style_label_left, color=color.new(color.navy, 50),
          textcolor=color.aqua, size=size.small)
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── SIGNAL SHAPES ON CHART
-// ════════════════════════════════════════════════════════════════════════════
-// BC-v1 signals (orange, hollow)
-plotshape(v1_long_sig,  "v1 LONG",  shape.triangleup,   location.belowbar,
+// ============================================================
+// SIGNAL SHAPES
+// ============================================================
+plotshape(v1_long,  "v1 Long",  shape.triangleup,   location.belowbar,
      color=color.new(color.orange, 20), size=size.small, text="v1")
-plotshape(v1_short_sig, "v1 SHORT", shape.triangledown, location.abovebar,
+plotshape(v1_short, "v1 Short", shape.triangledown, location.abovebar,
      color=color.new(color.orange, 20), size=size.small, text="v1")
 
-// BC-v2 signals (green/red, filled — the validated one)
-plotshape(v2_long_sig,  "v2 LONG",  shape.triangleup,   location.belowbar,
-     color=color.new(color.lime, 0), size=size.normal, text="v2 ▲", textcolor=color.lime)
-plotshape(v2_short_sig, "v2 SHORT", shape.triangledown, location.abovebar,
-     color=color.new(color.red, 0),  size=size.normal, text="v2 ▼", textcolor=color.red)
+plotshape(v2_long,  "v2 Long",  shape.triangleup,   location.belowbar,
+     color=color.lime, size=size.normal, text="v2")
+plotshape(v2_short, "v2 Short", shape.triangledown, location.abovebar,
+     color=color.red,  size=size.normal, text="v2")
 
-// Cycle signals (cyan/magenta, diamonds)
-plotshape(cy_long,  "Cyc LONG",  shape.diamond, location.belowbar,
-     color=color.new(color.aqua,    0), size=size.small, text="⊕", textcolor=color.aqua)
-plotshape(cy_short, "Cyc SHORT", shape.diamond, location.abovebar,
-     color=color.new(color.fuchsia, 0), size=size.small, text="⊖", textcolor=color.fuchsia)
+plotshape(cy_long,  "Cy Long",  shape.diamond, location.belowbar,
+     color=color.aqua,    size=size.small, text="C")
+plotshape(cy_short, "Cy Short", shape.diamond, location.abovebar,
+     color=color.fuchsia, size=size.small, text="C")
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── INFO TABLE
-// ════════════════════════════════════════════════════════════════════════════
-if show_tbl and barstate.islast
-    var table tbl = table.new(position.bottom_right, 3, 7,
-         bgcolor=color.new(color.black, 60), border_color=color.new(color.gray, 50), border_width=1,
-         frame_color=color.new(color.gray, 30), frame_width=1)
-
-    // Header
-    table.cell(tbl, 0, 0, "Signal",    text_color=color.gray,   text_size=size.tiny, bgcolor=color.new(color.black, 40))
-    table.cell(tbl, 1, 0, "Direction", text_color=color.gray,   text_size=size.tiny, bgcolor=color.new(color.black, 40))
-    table.cell(tbl, 2, 0, "Level",     text_color=color.gray,   text_size=size.tiny, bgcolor=color.new(color.black, 40))
-
-    // BC-v1 row
-    table.cell(tbl, 0, 1, "BC-v1 " + str.tostring(zz_pct_v1 * 100, "#") + "%",
-         text_color=color.orange, text_size=size.tiny)
-    table.cell(tbl, 1, 1, not na(v1_entry) ? (v1_long ? "LONG▲" : "SHORT▼") : "—",
-         text_color=not na(v1_entry) ? (v1_long ? color.lime : color.red) : color.gray, text_size=size.tiny)
-    table.cell(tbl, 2, 1, not na(v1_entry) ? str.tostring(v1_entry, "#.1") : "—",
+// ============================================================
+// INFO TABLE
+// ============================================================
+if i_showtbl and barstate.islast
+    var table tb = table.new(position.bottom_right, 3, 8,
+         bgcolor=color.new(color.black, 60),
+         border_color=color.new(color.gray, 50), border_width=1)
+    table.cell(tb, 0, 0, "Signal",    text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 1, 0, "Dir",       text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 2, 0, "Level",     text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 0, 1, "BC-v1",     text_color=color.orange, text_size=size.tiny)
+    table.cell(tb, 1, 1, not na(v1e) ? (v1lg ? "LONG" : "SHORT") : "--",
+         text_color=not na(v1e) ? (v1lg ? color.lime : color.red) : color.gray, text_size=size.tiny)
+    table.cell(tb, 2, 1, not na(v1e) ? str.tostring(v1e, "#.1") : "--",
          text_color=color.white, text_size=size.tiny)
-
-    // BC-v2 Entry row
-    table.cell(tbl, 0, 2, "BC-v2 " + str.tostring(zz_pct_v2 * 100, "#") + "%",
+    table.cell(tb, 0, 2, "BC-v2 En",  text_color=color.yellow, text_size=size.tiny)
+    table.cell(tb, 1, 2, not na(v2e) ? (v2lg ? "LONG" : "SHORT") : "--",
+         text_color=not na(v2e) ? (v2lg ? color.lime : color.red) : color.gray, text_size=size.tiny)
+    table.cell(tb, 2, 2, not na(v2e) ? str.tostring(v2e, "#.1") : "--",
          text_color=color.yellow, text_size=size.tiny)
-    table.cell(tbl, 1, 2, not na(v2_entry) ? (v2_long ? "LONG▲" : "SHORT▼") : "—",
-         text_color=not na(v2_entry) ? (v2_long ? color.lime : color.red) : color.gray, text_size=size.tiny)
-    table.cell(tbl, 2, 2, not na(v2_entry) ? str.tostring(v2_entry, "#.1") : "—",
-         text_color=color.yellow, text_size=size.tiny)
-
-    // BC-v2 SL row
-    table.cell(tbl, 0, 3, "  SL", text_color=color.gray, text_size=size.tiny)
-    table.cell(tbl, 1, 3, "61.8% back", text_color=color.gray, text_size=size.tiny)
-    table.cell(tbl, 2, 3, not na(v2_sl) ? str.tostring(v2_sl, "#.1") : "—",
-         text_color=color.red, text_size=size.tiny)
-
-    // BC-v2 TP row
-    table.cell(tbl, 0, 4, "  TP", text_color=color.gray, text_size=size.tiny)
-    table.cell(tbl, 1, 4, "161.8% ext", text_color=color.gray, text_size=size.tiny)
-    table.cell(tbl, 2, 4, not na(v2_tp) ? str.tostring(v2_tp, "#.1") : "—",
+    table.cell(tb, 0, 3, "  SL",      text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 1, 3, "61.8%",     text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 2, 3, not na(v2sl) ? str.tostring(v2sl, "#.1") : "--",
+         text_color=color.red,  text_size=size.tiny)
+    table.cell(tb, 0, 4, "  TP",      text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 1, 4, "161.8%",    text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 2, 4, not na(v2tp) ? str.tostring(v2tp, "#.1") : "--",
          text_color=color.lime, text_size=size.tiny)
-
-    // Cycle row
-    table.cell(tbl, 0, 5, "Cycle DFT", text_color=color.aqua, text_size=size.tiny)
-    table.cell(tbl, 1, 5, not na(vT) ? "T=" + str.tostring(vT, "#") + "b" : "—",
+    table.cell(tb, 0, 5, "Cycle T",   text_color=color.aqua,   text_size=size.tiny)
+    table.cell(tb, 1, 5, not na(vcT) ? str.tostring(vcT, "#") + " bars" : "--",
          text_color=color.aqua, text_size=size.tiny)
-    table.cell(tbl, 2, 5, not na(vAmp) ? "A=" + str.tostring(vAmp, "#.0") : "—",
+    table.cell(tb, 2, 5, not na(vcAmp) ? "A=" + str.tostring(vcAmp, "#.0") : "--",
          text_color=color.aqua, text_size=size.tiny)
-
-    // Cycle deriv
-    table.cell(tbl, 0, 6, "  d/dt", text_color=color.gray, text_size=size.tiny)
-    table.cell(tbl, 1, 6, not na(vD) ? (vD >= 0 ? "↑ rising" : "↓ falling") : "—",
-         text_color=not na(vD) ? (vD >= 0 ? color.lime : color.red) : color.gray, text_size=size.tiny)
-    table.cell(tbl, 2, 6, not na(vD) ? str.tostring(vD, "#.4") : "—",
+    table.cell(tb, 0, 6, "  d/dt",    text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 1, 6, not na(vcDer) ? (vcDer >= 0.0 ? "Rising" : "Falling") : "--",
+         text_color=not na(vcDer) ? (vcDer >= 0.0 ? color.lime : color.red) : color.gray, text_size=size.tiny)
+    table.cell(tb, 2, 6, not na(vcDer) ? str.tostring(vcDer, "#.5") : "--",
          text_color=color.gray, text_size=size.tiny)
+    table.cell(tb, 0, 7, "Confirmed", text_color=color.gray,   text_size=size.tiny)
+    table.cell(tb, 1, 7, v2cfm ? "YES" : "no",
+         text_color=v2cfm ? color.yellow : color.gray, text_size=size.tiny)
+    table.cell(tb, 2, 7, v2cfm ? "Enter next open" : "--",
+         text_color=color.yellow, text_size=size.tiny)
 
-// ════════════════════════════════════════════════════════════════════════════
-// ─── ALERT CONDITIONS
-// ════════════════════════════════════════════════════════════════════════════
-alertcondition(v1_long_sig,  "v1 LONG",         "BC-v1 LONG entry — price hit breakout at {{close}}")
-alertcondition(v1_short_sig, "v1 SHORT",        "BC-v1 SHORT entry — price hit breakout at {{close}}")
-alertcondition(v2_confirmed and v2_conf_long,   "v2 LONG Confirmed",  "BC-v2 LONG confirmed close at {{close}} — BUY at next bar open")
-alertcondition(v2_confirmed and not v2_conf_long,"v2 SHORT Confirmed","BC-v2 SHORT confirmed close at {{close}} — SELL at next bar open")
-alertcondition(v2_long_sig,  "v2 LONG Entry",   "BC-v2 LONG entry bar open now at {{open}}")
-alertcondition(v2_short_sig, "v2 SHORT Entry",  "BC-v2 SHORT entry bar open now at {{open}}")
-alertcondition(cy_long,      "Cycle LONG",      "Cycle: LONG turning point at {{close}}  T=" + str.tostring(vT, "#") + " A=" + str.tostring(vAmp, "#.0"))
-alertcondition(cy_short,     "Cycle SHORT",     "Cycle: SHORT turning point at {{close}}  T=" + str.tostring(vT, "#") + " A=" + str.tostring(vAmp, "#.0"))
+// ============================================================
+// ALERTS
+// ============================================================
+alertcondition(v1_long,  "v1 LONG",           "BC-v1 LONG: breakout at {{close}}")
+alertcondition(v1_short, "v1 SHORT",          "BC-v1 SHORT: breakout at {{close}}")
+alertcondition(v2cfm and v2cfl,  "v2 LONG Confirmed",  "BC-v2 LONG confirmed at {{close}} -- enter at next open")
+alertcondition(v2cfm and not v2cfl, "v2 SHORT Confirmed", "BC-v2 SHORT confirmed at {{close}} -- enter at next open")
+alertcondition(v2_long,  "v2 LONG Entry",     "BC-v2 LONG entry bar now open at {{open}}")
+alertcondition(v2_short, "v2 SHORT Entry",    "BC-v2 SHORT entry bar now open at {{open}}")
+alertcondition(cy_long,  "Cycle LONG",        "Cycle LONG turning point at {{close}}")
+alertcondition(cy_short, "Cycle SHORT",       "Cycle SHORT turning point at {{close}}")
