@@ -1,0 +1,188 @@
+//@version=5
+// ═══════════════════════════════════════════════════════════════════════════
+// BREAKOUT-CONTINUATION v1 | Swing-Point Stop, Origin SL, 100% Measured-Move
+// Strategy #3 from the BC backtest series.
+//
+// Logic:
+//   1. Zig-zag pivot detects confirmed swing highs / lows.
+//   2. LONG setup  : up-leg (L→H) confirmed → buy stop above swing HIGH
+//   3. SHORT setup : down-leg (H→L) confirmed → sell stop below swing LOW
+//   4. SL placed all the way back at the leg's ORIGIN (the opposite swing)
+//   5. TP at 100% measured-move extension from the breakout level
+//   6. Setup cancelled when the NEXT pivot confirms (window expired)
+//
+// Known flaw (documented in the backtest study): SL is consistently wider
+// than the reward on most legs → structural RR < 1 before win rate.
+// v2 fixes this; this script exists for honest comparison.
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("BC-v1 · Swing Breakout", shorttitle="BC-v1",
+     overlay=true, pyramiding=0,
+     initial_capital=5000,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     currency=currency.USD,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     slippage=2)
+
+// ── Inputs ─────────────────────────────────────────────────────────────────
+var string G1 = "Zig-Zag"
+zz_pct   = input.float(8.0,  "Reversal Threshold %",   minval=1.0, maxval=30.0, step=0.5, group=G1) / 100
+var string G2 = "Trade"
+brk_buf  = input.float(0.20, "Breakout Buffer %",       minval=0.0, maxval=2.0,  step=0.05, group=G2) / 100
+acc_size = input.float(5000, "Account Size $",          minval=100, group=G2)
+risk_pct = input.float(1.0,  "Risk Per Trade %",        minval=0.1, maxval=5.0,  step=0.1, group=G2) / 100
+var string G3 = "Display"
+show_zz  = input.bool(true,  "Draw Zig-Zag Lines",      group=G3)
+show_sl  = input.bool(true,  "Show SL / TP Lines",      group=G3)
+show_tbl = input.bool(true,  "Show Stats Table",         group=G3)
+
+// ── Zig-Zag Engine ─────────────────────────────────────────────────────────
+var float run_hi     = high
+var float run_lo     = low
+var int   run_hi_bar = bar_index
+var int   run_lo_bar = bar_index
+var bool  seek_hi    = true      // alternates; start looking for a high
+
+var float ph = na                // most recent confirmed swing HIGH price
+var float pl = na                // most recent confirmed swing LOW price
+var int   ph_bar = na
+var int   pl_bar = na
+
+// Current pending leg parameters
+var float leg_origin = na
+var float leg_pivot  = na
+var bool  leg_long   = false
+var bool  leg_active = false
+
+var line  zz_line    = na
+
+bool new_ph = false
+bool new_pl = false
+
+if seek_hi
+    if high > run_hi
+        run_hi    := high
+        run_hi_bar := bar_index
+    if close < run_hi * (1.0 - zz_pct)
+        // ── Confirmed SWING HIGH ───────────────────────────────────────────
+        if show_zz and not na(pl)
+            zz_line := line.new(pl_bar, pl, run_hi_bar, run_hi,
+                 color=color.new(color.teal, 30), width=2)
+        if not na(pl)
+            leg_origin  := pl
+            leg_pivot   := run_hi
+            leg_long    := true
+            leg_active  := true
+        ph      := run_hi
+        ph_bar  := run_hi_bar
+        new_ph  := true
+        seek_hi := false
+        run_lo  := low
+        run_lo_bar := bar_index
+else
+    if low < run_lo
+        run_lo     := low
+        run_lo_bar := bar_index
+    if close > run_lo * (1.0 + zz_pct)
+        // ── Confirmed SWING LOW ────────────────────────────────────────────
+        if show_zz and not na(ph)
+            zz_line := line.new(ph_bar, ph, run_lo_bar, run_lo,
+                 color=color.new(color.red, 30), width=2)
+        if not na(ph)
+            leg_origin  := ph
+            leg_pivot   := run_lo
+            leg_long    := false
+            leg_active  := true
+        pl      := run_lo
+        pl_bar  := run_lo_bar
+        new_pl  := true
+        seek_hi := true
+        run_hi  := high
+        run_hi_bar := bar_index
+
+// Labels on confirmed pivots
+if show_zz
+    if new_ph
+        label.new(ph_bar, ph, "H", style=label.style_label_down,
+             color=color.new(color.teal, 60), textcolor=color.white, size=size.small)
+    if new_pl
+        label.new(pl_bar, pl, "L", style=label.style_label_up,
+             color=color.new(color.red, 60), textcolor=color.white, size=size.small)
+
+// ── Entry Logic ─────────────────────────────────────────────────────────────
+var float e_entry = na   // breakout level
+var float e_sl    = na   // stop loss at origin
+var float e_tp    = na   // take profit at 100% extension
+var line  sl_line = na
+var line  tp_line = na
+
+// Recalculate on each new leg
+if leg_active
+    float rng = math.abs(leg_pivot - leg_origin)
+    if leg_long
+        e_entry := leg_pivot * (1.0 + brk_buf)
+        e_sl    := leg_origin
+        e_tp    := e_entry + rng
+    else
+        e_entry := leg_pivot * (1.0 - brk_buf)
+        e_sl    := leg_origin
+        e_tp    := e_entry - rng
+
+// Cancel existing pending order when new pivot confirms (window expired)
+if (new_ph or new_pl) and strategy.position_size == 0
+    strategy.cancel_all()
+
+// Place a stop order on the new leg (v1: wick-touch sufficient → native stop order)
+if leg_active and (new_ph or new_pl) and strategy.position_size == 0
+    float rng          = math.abs(leg_pivot - leg_origin)
+    float risk_per_unit = math.abs(e_entry - e_sl)
+    float qty          = risk_per_unit > 0 ? (acc_size * risk_pct) / risk_per_unit : na
+    if not na(qty) and qty > 0
+        if leg_long
+            strategy.entry("Long",  strategy.long,  qty=qty, stop=e_entry)
+            strategy.exit("Long-X", "Long",  stop=e_sl, limit=e_tp)
+        else
+            strategy.entry("Short", strategy.short, qty=qty, stop=e_entry)
+            strategy.exit("Short-X","Short", stop=e_sl, limit=e_tp)
+    leg_active := false
+
+// ── Draw SL / TP reference lines on the most recent open trade ─────────────
+if show_sl and strategy.position_size != 0
+    if not na(sl_line)
+        line.delete(sl_line)
+    if not na(tp_line)
+        line.delete(tp_line)
+    ep = strategy.opentrades.entry_price(0)
+    // Nearest SL/TP from the last order
+    sl_line := line.new(bar_index - 10, e_sl, bar_index, e_sl,
+         color=color.red, style=line.style_dashed, width=1, extend=extend.right)
+    tp_line := line.new(bar_index - 10, e_tp, bar_index, e_tp,
+         color=color.green, style=line.style_dashed, width=1, extend=extend.right)
+
+// ── Stats Table ─────────────────────────────────────────────────────────────
+if show_tbl and barstate.islast
+    var table tbl = table.new(position.top_right, 2, 6,
+         bgcolor=color.new(color.black, 70), border_color=color.new(color.gray, 50), border_width=1)
+    float net    = strategy.netprofit
+    float trades = strategy.closedtrades
+    float wins   = strategy.wintrades
+    float losses = strategy.losstrades
+    float wr     = trades > 0 ? wins / trades * 100 : 0.0
+    table.cell(tbl, 0, 0, "BC-v1 Stats",  text_color=color.white, bgcolor=color.new(color.teal, 40), text_size=size.small)
+    table.cell(tbl, 1, 0, str.tostring(zz_pct * 100, "#.0") + "% ZZ", text_color=color.white, bgcolor=color.new(color.teal, 40), text_size=size.small)
+    table.cell(tbl, 0, 1, "Closed",       text_color=color.gray,  text_size=size.small)
+    table.cell(tbl, 1, 1, str.tostring(trades, "#"), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 2, "Win Rate",     text_color=color.gray,  text_size=size.small)
+    table.cell(tbl, 1, 2, str.tostring(wr, "#.1") + "%", text_color=wr >= 50 ? color.lime : color.orange, text_size=size.small)
+    table.cell(tbl, 0, 3, "Net P&L",      text_color=color.gray,  text_size=size.small)
+    table.cell(tbl, 1, 3, "$" + str.tostring(net, "#.2"), text_color=net >= 0 ? color.lime : color.red, text_size=size.small)
+    table.cell(tbl, 0, 4, "Avg Win",      text_color=color.gray,  text_size=size.small)
+    table.cell(tbl, 1, 4, "$" + str.tostring(strategy.grossprofit / math.max(wins, 1), "#.2"), text_color=color.lime, text_size=size.small)
+    table.cell(tbl, 0, 5, "Avg Loss",     text_color=color.gray,  text_size=size.small)
+    table.cell(tbl, 1, 5, "$" + str.tostring(strategy.grossloss  / math.max(losses, 1), "#.2"), text_color=color.red,  text_size=size.small)
+
+// ── Alerts ──────────────────────────────────────────────────────────────────
+alertcondition(strategy.position_size > 0  and strategy.position_size[1] == 0, "BC-v1 LONG Entry",  "BC-v1 LONG entered at {{close}}")
+alertcondition(strategy.position_size < 0  and strategy.position_size[1] == 0, "BC-v1 SHORT Entry", "BC-v1 SHORT entered at {{close}}")
+alertcondition(strategy.position_size == 0 and strategy.position_size[1] != 0, "BC-v1 Exit",        "BC-v1 trade exited at {{close}}")

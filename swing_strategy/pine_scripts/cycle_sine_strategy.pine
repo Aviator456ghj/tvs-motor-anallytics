@@ -1,0 +1,212 @@
+//@version=5
+// ═══════════════════════════════════════════════════════════════════════════
+// CYCLE (SINE-WAVE) STRATEGY — DFT Periodogram + Derivative Turning Points
+// Strategy #6 from the backtest series.
+//
+// Method (replicates cycle_sine_backtest.py exactly):
+//   1. Detrend: x_t = close - SMA(close, sma_period)
+//   2. Scan candidate periods T ∈ [min_T, max_T]:
+//        a_T = (2/W) * Σ x_t · cos(2π·t/T)    (cosine coefficient)
+//        b_T = (2/W) * Σ x_t · sin(2π·t/T)    (sine coefficient)
+//        power = a_T² + b_T²
+//   3. Dominant cycle T* = argmax(power), amplitude A = √power
+//   4. Fitted wave derivative at current bar t:
+//        d/dt [a cos(ωt) + b sin(ωt)] = -a·ω·sin(ωt) + b·ω·cos(ωt)
+//   5. Turning-point signal: derivative crosses zero
+//        + momentum gate: close[0] vs close[3] confirms direction
+//   6. Entry at bar's CLOSE (no next-bar delay on daily signals)
+//      SL: 20-bar swing extreme ± sl_buffer
+//      TP: entry ± amplitude × tp_mult
+//
+// Honest finding: borderline result on 2-year BTCUSD daily (3W/2L at
+// default params). The detected dominant period clusters at 56-60 days
+// (edge of the scan range), suggesting the scan range needs widening.
+// Use this on a fresh instrument with wider period scan to properly test.
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("Cycle Sine Strategy", shorttitle="CycleSine",
+     overlay=false, pyramiding=0,
+     initial_capital=5000,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     currency=currency.USD,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     slippage=2)
+
+// ── Inputs ─────────────────────────────────────────────────────────────────
+var string G1 = "Cycle Detection"
+fit_window  = input.int(120,  "Fit Window (bars)",    minval=30, maxval=300, group=G1)
+sma_period  = input.int(50,   "Detrend SMA Period",   minval=10, maxval=200, group=G1)
+min_T       = input.int(10,   "Min Candidate Period", minval=3,  maxval=50,  group=G1)
+max_T       = input.int(60,   "Max Candidate Period", minval=10, maxval=200, group=G1)
+mom_bars    = input.int(3,    "Momentum Lookback",    minval=1,  maxval=10,  group=G1)
+var string G2 = "Trade"
+sl_buf      = input.float(2.0, "SL Buffer %",         minval=0.1, maxval=10.0, step=0.1, group=G2) / 100
+tp_mult     = input.float(1.0, "TP Amplitude Multiple",minval=0.25, maxval=5.0, step=0.25, group=G2)
+acc_size    = input.float(5000,"Account Size $",       minval=100, group=G2)
+risk_pct    = input.float(1.0, "Risk Per Trade %",     minval=0.1, maxval=5.0, step=0.1, group=G2) / 100
+var string G3 = "Display"
+show_wave   = input.bool(true, "Plot Fitted Wave",     group=G3)
+show_deriv  = input.bool(true, "Plot Derivative",      group=G3)
+show_tbl    = input.bool(true, "Show Stats Table",     group=G3)
+
+// ── Detrended Series & DFT ──────────────────────────────────────────────────
+// Only compute on confirmed (closed) bars and only once we have enough data
+float dom_T     = na
+float dom_a     = na
+float dom_b     = na
+float dom_amp   = na
+float dom_deriv = na
+float dom_prev_deriv = na
+float fitted_val= na
+
+if barstate.isconfirmed and bar_index >= fit_window + sma_period
+    // Build detrended series (FIT_WINDOW bars, index 0 = current, FIT_WINDOW-1 = oldest)
+    float[] xt = array.new_float(fit_window, 0.0)
+    for i = 0 to fit_window - 1
+        array.set(xt, i, close[i] - ta.sma(close, sma_period)[i])
+
+    // DFT periodogram scan
+    float best_power = 0.0
+    float best_T_f   = float(min_T)
+    float best_a_f   = 0.0
+    float best_b_f   = 0.0
+
+    for T = min_T to max_T
+        float a_T = 0.0
+        float b_T = 0.0
+        float T_f = float(T)
+        float W_f = float(fit_window)
+        for t = 0 to fit_window - 1
+            float x     = array.get(xt, fit_window - 1 - t)  // oldest→newest = t=0→fit_window-1
+            float angle = 2.0 * math.pi * float(t) / T_f
+            a_T += x * math.cos(angle)
+            b_T += x * math.sin(angle)
+        a_T := 2.0 * a_T / W_f
+        b_T := 2.0 * b_T / W_f
+        float power = a_T * a_T + b_T * b_T
+        if power > best_power
+            best_power := power
+            best_T_f   := T_f
+            best_a_f   := a_T
+            best_b_f   := b_T
+
+    dom_T   := best_T_f
+    dom_a   := best_a_f
+    dom_b   := best_b_f
+    dom_amp := math.sqrt(best_a_f * best_a_f + best_b_f * best_b_f)
+
+    // Derivative of fitted sine at current bar (t = fit_window - 1)
+    float omega   = 2.0 * math.pi / best_T_f
+    float t_curr  = float(fit_window - 1)
+    float t_prev  = float(fit_window - 2)
+    dom_deriv      := -best_a_f * omega * math.sin(omega * t_curr) + best_b_f * omega * math.cos(omega * t_curr)
+    dom_prev_deriv := -best_a_f * omega * math.sin(omega * t_prev) + best_b_f * omega * math.cos(omega * t_prev)
+
+    // Fitted wave value at current bar for plotting
+    fitted_val := best_a_f * math.cos(omega * t_curr) + best_b_f * math.sin(omega * t_curr)
+
+// Persist last computed values across bars (DFT only runs on confirmed bars)
+var float v_dom_T     = na
+var float v_dom_a     = na
+var float v_dom_b     = na
+var float v_dom_amp   = na
+var float v_deriv     = na
+var float v_prev_deriv= na
+var float v_fitted    = na
+
+if not na(dom_T)
+    v_dom_T      := dom_T
+    v_dom_a      := dom_a
+    v_dom_b      := dom_b
+    v_dom_amp    := dom_amp
+    v_deriv      := dom_deriv
+    v_prev_deriv := dom_prev_deriv
+    v_fitted     := fitted_val
+
+// ── Plots ───────────────────────────────────────────────────────────────────
+plot(show_wave  ? v_fitted : na,  "Fitted Wave",   color=color.new(color.aqua,   20), linewidth=2)
+plot(show_deriv ? v_deriv  : na,  "Derivative",    color=color.new(color.orange, 20), linewidth=1)
+hline(0, "Zero Line", color=color.new(color.gray, 50), linestyle=hline.style_dotted)
+
+// Dominant period label (updates each bar)
+var label lbl_T = na
+label.delete(lbl_T)
+if barstate.islast and not na(v_dom_T)
+    lbl_T := label.new(bar_index, v_fitted,
+         "T=" + str.tostring(v_dom_T, "#") + "  A=" + str.tostring(v_dom_amp, "#.1"),
+         style=label.style_label_left, color=color.new(color.black, 60),
+         textcolor=color.aqua, size=size.small)
+
+// ── Turning-Point Signals ───────────────────────────────────────────────────
+// Derivative crosses zero upward → TROUGH (long signal)
+// Derivative crosses zero downward → PEAK  (short signal)
+bool cross_up   = not na(v_deriv) and not na(v_prev_deriv) and v_deriv >= 0 and v_prev_deriv < 0
+bool cross_down = not na(v_deriv) and not na(v_prev_deriv) and v_deriv <= 0 and v_prev_deriv > 0
+
+// Momentum gate: close vs N bars ago must agree with direction
+bool mom_long  = close > close[mom_bars]
+bool mom_short = close < close[mom_bars]
+
+bool signal_long  = cross_up   and mom_long
+bool signal_short = cross_down and mom_short
+
+// ── Structural SL and Amplitude-Based TP ───────────────────────────────────
+float sl_long  = ta.lowest(low,  20) * (1.0 - sl_buf)   // 20-bar swing low  - buffer
+float sl_short = ta.highest(high, 20) * (1.0 + sl_buf)  // 20-bar swing high + buffer
+
+// ── Entry / Exit ─────────────────────────────────────────────────────────────
+if signal_long and strategy.position_size == 0
+    float sl    = sl_long
+    float tp    = close + v_dom_amp * tp_mult
+    float risk  = math.abs(close - sl)
+    float qty   = risk > 0 ? (acc_size * risk_pct) / risk : 0.001
+    strategy.entry("Long",  strategy.long,  qty=qty)
+    strategy.exit("Long-X", "Long",  stop=sl, limit=tp)
+
+if signal_short and strategy.position_size == 0
+    float sl    = sl_short
+    float tp    = close - v_dom_amp * tp_mult
+    float risk  = math.abs(sl - close)
+    float qty   = risk > 0 ? (acc_size * risk_pct) / risk : 0.001
+    strategy.entry("Short",  strategy.short, qty=qty)
+    strategy.exit("Short-X", "Short", stop=sl, limit=tp)
+
+// ── Signal Markers (on the price chart via overlay study idea — plotshape on this pane) ─
+plotshape(signal_long,  "Long Signal",  shape.triangleup,   location.bottom, color=color.lime,   size=size.small)
+plotshape(signal_short, "Short Signal", shape.triangledown, location.top,    color=color.red,    size=size.small)
+
+// ── Stats Table ─────────────────────────────────────────────────────────────
+if show_tbl and barstate.islast
+    var table tbl = table.new(position.top_right, 2, 9,
+         bgcolor=color.new(color.black, 65), border_color=color.new(color.gray, 40), border_width=1)
+    float net    = strategy.netprofit
+    float closed = strategy.closedtrades
+    float wins   = strategy.wintrades
+    float losses = strategy.losstrades
+    float wr     = closed > 0 ? wins / closed * 100 : 0.0
+    table.cell(tbl, 0, 0, "Cycle Sine",      text_color=color.white,  bgcolor=color.new(color.blue, 30), text_size=size.small)
+    table.cell(tbl, 1, 0, "DFT Strategy",    text_color=color.white,  bgcolor=color.new(color.blue, 30), text_size=size.small)
+    table.cell(tbl, 0, 1, "Dom Period",      text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 1, not na(v_dom_T) ? str.tostring(v_dom_T, "#") + " bars" : "—", text_color=color.aqua, text_size=size.small)
+    table.cell(tbl, 0, 2, "Amplitude",       text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 2, not na(v_dom_amp) ? str.tostring(v_dom_amp, "#.2") : "—", text_color=color.aqua, text_size=size.small)
+    table.cell(tbl, 0, 3, "Derivative",      text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 3, not na(v_deriv) ? str.tostring(v_deriv, "#.4") : "—",
+         text_color=not na(v_deriv) ? (v_deriv >= 0 ? color.lime : color.red) : color.gray, text_size=size.small)
+    table.cell(tbl, 0, 4, "Closed Trades",   text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 4, str.tostring(closed, "#"), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 5, "Win Rate",        text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 5, str.tostring(wr, "#.1") + "%", text_color=wr >= 50 ? color.lime : color.orange, text_size=size.small)
+    table.cell(tbl, 0, 6, "Net P&L",         text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 6, "$" + str.tostring(net, "#.2"), text_color=net >= 0 ? color.lime : color.red, text_size=size.small)
+    table.cell(tbl, 0, 7, "TP Multiple",     text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 7, str.tostring(tp_mult, "#.2") + "x A", text_color=color.lime, text_size=size.small)
+    table.cell(tbl, 0, 8, "Fit Window",      text_color=color.gray,   text_size=size.small)
+    table.cell(tbl, 1, 8, str.tostring(fit_window) + " bars", text_color=color.white, text_size=size.small)
+
+// ── Alert Conditions ─────────────────────────────────────────────────────────
+alertcondition(signal_long,  "Cycle LONG Signal",  "Cycle: LONG turning point — T={{v_dom_T}} bars, A={{v_dom_amp}}")
+alertcondition(signal_short, "Cycle SHORT Signal", "Cycle: SHORT turning point — T={{v_dom_T}} bars, A={{v_dom_amp}}")
+alertcondition(strategy.position_size == 0 and strategy.position_size[1] != 0,
+     "Cycle Trade Closed", "Cycle trade closed at {{close}}")
