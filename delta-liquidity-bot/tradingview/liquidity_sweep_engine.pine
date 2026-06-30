@@ -75,8 +75,10 @@ volOk   = avgVol > 0 and volume >= avgVol * volFactor
 ph = ta.pivothigh(high, pivLen, pivLen)
 pl = ta.pivotlow(low,  pivLen, pivLen)
 
-var float swHigh1 = na, var float swHigh0 = na   // 0 = latest, 1 = previous
-var float swLow1  = na, var float swLow0  = na
+var float swHigh1 = na   // previous swing high
+var float swHigh0 = na   // latest swing high
+var float swLow1  = na   // previous swing low
+var float swLow0  = na   // latest swing low
 if not na(ph)
     swHigh1 := swHigh0
     swHigh0 := ph
@@ -156,7 +158,7 @@ if strategy.position_size > 0 and not na(entryPx)
     inProfit1R = close >= entryPx + initRisk
     beStop     = useBE and inProfit1R ? entryPx : na
     trStop     = useTrail and inProfit1R ? close - atr * trailAtr : na
-    newStop    = math.max(nz(beStop, na), nz(trStop, na))
+    newStop    = na(beStop) and na(trStop) ? na : math.max(nz(beStop, -1e12), nz(trStop, -1e12))
     if not na(newStop)
         strategy.exit("Long-x", "Long", stop=newStop, limit=entryPx + initRisk * rrTarget)
 
@@ -184,32 +186,38 @@ if shortSig
     label.new(bar_index, high, (flipShort ? "FLIP▼" : "SWEEP▼"), style=label.style_label_down, color=bear, textcolor=color.white, size=size.small)
 
 // Live SL/TP lines while in a trade
-var line slLine = na, var line tpLine = na
+var line slLine = na
+var line tpLine = na
 if showLevels and strategy.position_size != 0
     sl = strategy.position_size > 0 ? nz(entryPx, close) - nz(initRisk, atr) : nz(entryPx, close) + nz(initRisk, atr)
     tp = strategy.position_size > 0 ? nz(entryPx, close) + nz(initRisk, atr) * rrTarget : nz(entryPx, close) - nz(initRisk, atr) * rrTarget
-    line.delete(slLine), line.delete(tpLine)
+    line.delete(slLine)
+    line.delete(tpLine)
     slLine := line.new(bar_index-1, sl, bar_index, sl, color=bear, width=1, style=line.style_dashed, extend=extend.right)
     tpLine := line.new(bar_index-1, tp, bar_index, tp, color=bull, width=1, style=line.style_dashed, extend=extend.right)
 else if showLevels and strategy.position_size == 0
-    line.delete(slLine), line.delete(tpLine)
+    line.delete(slLine)
+    line.delete(tpLine)
 
 // ─── Dashboard ─────────────────────────────────────────────────────────────
 var table dash = table.new(position.top_right, 2, 7, border_width=1, frame_color=color.new(color.gray, 60))
+
+// helper must be declared at global scope (Pine forbids function defs inside if)
+dashRow(r, k, v, vc) =>
+    table.cell(dash, 0, r, k, text_size=size.small, text_color=color.new(color.gray, 0), text_halign=text.align_left)
+    table.cell(dash, 1, r, v, text_size=size.small, text_color=vc, text_halign=text.align_right)
+
 if showPanel and barstate.islast
     posTxt = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
     posCol = strategy.position_size > 0 ? bull : strategy.position_size < 0 ? bear : color.new(color.gray, 0)
-    f(r, k, v, vc) =>
-        table.cell(dash, 0, r, k, text_size=size.small, text_color=color.new(color.gray, 0), text_halign=text.align_left)
-        table.cell(dash, 1, r, v, text_size=size.small, text_color=vc, text_halign=text.align_right)
     table.cell(dash, 0, 0, "Liquidity Engine", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
     table.cell(dash, 1, 0, syminfo.ticker, text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
-    f(1, "Trend", trend, color.new(color.white, 0))
-    f(2, "Range", str.tostring(rangeLow, format.mintick) + " – " + str.tostring(rangeHigh, format.mintick), color.new(color.white, 0))
-    f(3, "HTF bias", useHTF ? (htfBull ? "Bullish" : "Bearish") : "off", useHTF ? (htfBull ? bull : bear) : color.new(color.gray, 0))
-    f(4, "Position", posTxt, posCol)
-    f(5, "Open P&L", str.tostring(strategy.openprofit, "#.##"), strategy.openprofit >= 0 ? bull : bear)
-    f(6, "Net profit", str.tostring(strategy.netprofit, "#.##"), strategy.netprofit >= 0 ? bull : bear)
+    dashRow(1, "Trend", trend, color.new(color.white, 0))
+    dashRow(2, "Range", str.tostring(rangeLow, format.mintick) + " - " + str.tostring(rangeHigh, format.mintick), color.new(color.white, 0))
+    dashRow(3, "HTF bias", useHTF ? (htfBull ? "Bullish" : "Bearish") : "off", useHTF ? (htfBull ? bull : bear) : color.new(color.gray, 0))
+    dashRow(4, "Position", posTxt, posCol)
+    dashRow(5, "Open P&L", str.tostring(strategy.openprofit, "#.##"), strategy.openprofit >= 0 ? bull : bear)
+    dashRow(6, "Net profit", str.tostring(strategy.netprofit, "#.##"), strategy.netprofit >= 0 ? bull : bear)
 
 // ─── Alerts ────────────────────────────────────────────────────────────────
 alertcondition(longSig,  "LONG signal",  "Liquidity LONG {{ticker}} @ {{close}}")
