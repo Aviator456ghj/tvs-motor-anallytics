@@ -23,9 +23,11 @@ import pandas as pd
 import numpy as np
 
 # ─────────────────────────────────────────────
-MULTIPLIER   = 2.6
-SWING_N      = 5          # candles on each side required to confirm a structural pivot
-DATA_CSV     = "btc_daily.csv"
+MULTIPLIER     = 2.6
+SWING_N        = 5     # candles each side required to confirm a structural pivot
+ADX_PERIOD     = 14
+ADX_THRESHOLD  = 20    # only enter when ADX > this (trending environment)
+DATA_CSV       = "btc_daily.csv"
 # ─────────────────────────────────────────────
 
 
@@ -38,7 +40,49 @@ def load_data():
     return df
 
 
-# ── 2. SWING DETECTION ───────────────────────
+# ── 2. ADX ───────────────────────────────────
+def calc_adx(df, period=ADX_PERIOD):
+    """Wilder-smoothed ADX (standard 14-period)."""
+    hi = df["High"].values
+    lo = df["Low"].values
+    cl = df["Close"].values
+    n  = len(df)
+
+    tr   = np.zeros(n)
+    pdm  = np.zeros(n)   # +DM
+    ndm  = np.zeros(n)   # -DM
+
+    for i in range(1, n):
+        h_diff = hi[i] - hi[i - 1]
+        l_diff = lo[i - 1] - lo[i]
+        tr[i]  = max(hi[i] - lo[i], abs(hi[i] - cl[i - 1]), abs(lo[i] - cl[i - 1]))
+        pdm[i] = h_diff if h_diff > l_diff and h_diff > 0 else 0.0
+        ndm[i] = l_diff if l_diff > h_diff and l_diff > 0 else 0.0
+
+    # Wilder smoothing
+    def wilder(arr, p):
+        out = np.zeros(n)
+        out[p] = arr[1: p + 1].sum()
+        for i in range(p + 1, n):
+            out[i] = out[i - 1] - out[i - 1] / p + arr[i]
+        return out
+
+    atr  = wilder(tr,  period)
+    pDM  = wilder(pdm, period)
+    nDM  = wilder(ndm, period)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pDI = np.where(atr > 0, 100 * pDM / atr, 0.0)
+        nDI = np.where(atr > 0, 100 * nDM / atr, 0.0)
+        dx  = np.where(pDI + nDI > 0, 100 * np.abs(pDI - nDI) / (pDI + nDI), 0.0)
+
+    # wilder() accumulates a running sum ≈ period × true_value.
+    # Dividing by period converts it to the proper 0-100 ADX scale.
+    adx = wilder(dx, period) / period
+    return adx
+
+
+# ── 3. SWING DETECTION ───────────────────────
 def find_swings(df, n=SWING_N):
     """
     Return list of dicts {idx, date, type:'H'|'L', price} — alternating,
@@ -76,8 +120,8 @@ def find_swings(df, n=SWING_N):
     return alt
 
 
-# ── 3. BACKTEST ENGINE ───────────────────────
-def run_backtest(df, swings):
+# ── 4. BACKTEST ENGINE ───────────────────────
+def run_backtest(df, swings, adx):
     hi = df["High"].values
     lo = df["Low"].values
 
@@ -279,14 +323,14 @@ def run_backtest(df, swings):
                     clear_signal()
                     continue
 
-            # Check entry trigger
-            if sig_direction and not active:
+            # Check entry trigger — only when ADX confirms a trend
+            if sig_direction and not active and adx[ci] > ADX_THRESHOLD:
                 if sig_direction == "LONG" and c_lo <= sig_entry:
-                    ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL}
+                    ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL, "adx_at_entry": round(adx[ci], 1)}
                     active = open_trade("LONG", sig_entry, c_dt, sig_stop, ref)
                     clear_signal()
                 elif sig_direction == "SHORT" and c_hi >= sig_entry:
-                    ref = {"ref_LH": sig_ref_LH, "ref_LL": sig_ref_LL}
+                    ref = {"ref_LH": sig_ref_LH, "ref_LL": sig_ref_LL, "adx_at_entry": round(adx[ci], 1)}
                     active = open_trade("SHORT", sig_entry, c_dt, sig_stop, ref)
                     clear_signal()
 
@@ -309,12 +353,13 @@ def print_results(trades):
     shorts = df_t[df_t["direction"] == "SHORT"]
 
     print("\n" + "=" * 60)
-    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6 MULTIPLIER")
+    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  2.6 MULTIPLIER  |  ADX FILTER")
     print("=" * 60)
     period = f"{df_t['entry_date'].min().date()} → {df_t['entry_date'].max().date()}"
     print(f"  Period          : {period}")
     print(f"  Swing lookback  : {SWING_N} candles each side")
     print(f"  Multiplier      : {MULTIPLIER}  (entry ≈ 38.5 % into swing)")
+    print(f"  ADX filter      : period={ADX_PERIOD}, threshold={ADX_THRESHOLD} (trend-only entries)")
     print("-" * 60)
     print(f"  Total Trades    : {total}")
     print(f"  Wins            : {wins}")
@@ -378,12 +423,12 @@ def print_results(trades):
      FIX → Allow a tolerance band (e.g. ± 0.1 %) when comparing
            swing levels.
 
-  5. SINGLE-DIRECTION BIAS DURING RANGING MARKETS
+  5. SINGLE-DIRECTION BIAS DURING RANGING MARKETS  [APPLIED]
      The strategy forces either UPTREND or DOWNTREND.  During sideways
      consolidation, many CHoCH events fire rapidly, generating a run
      of losses.
-     FIX → Add an ADX or range-filter: only trade when ADX > 20
-           to confirm a trending environment.
+     FIX (applied) → Entry is now gated by ADX(14) > 20.  Entries
+           during low-ADX (choppy/ranging) candles are skipped.
 
   6. ENTRY LEVEL INSIDE THE SIGNAL CANDLE
      If the entry level is within the range of the swing candle itself
@@ -399,10 +444,14 @@ def print_results(trades):
 # ── MAIN ─────────────────────────────────────
 if __name__ == "__main__":
     df     = load_data()
+    adx    = calc_adx(df, period=ADX_PERIOD)
     swings = find_swings(df, n=SWING_N)
     print(f"\n  Structural swings detected: {len(swings)} "
           f"({sum(1 for s in swings if s['type']=='H')} highs, "
           f"{sum(1 for s in swings if s['type']=='L')} lows)")
+    adx_gt20 = (adx > ADX_THRESHOLD).sum()
+    print(f"  ADX > {ADX_THRESHOLD} on {adx_gt20}/{len(df)} candles "
+          f"({adx_gt20/len(df)*100:.1f}% of bars — tradeable)")
 
-    trades = run_backtest(df, swings)
+    trades = run_backtest(df, swings, adx)
     result_df = print_results(trades)
