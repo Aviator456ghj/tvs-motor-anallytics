@@ -305,34 +305,11 @@ if IN_TRADE and strategy.position_size == 0
 //       pullback to 0.618 of that sub-swing gets traded automatically
 // ══════════════════════════════════════════════════════════════════
 if i_cascade and TP1_HIT and not IN_TRADE and not na(TR_ENTRY_PX) and not na(TR_TP1_PX)
-    _crng = math.abs(TR_TP1_PX - TR_ENTRY_PX)
-    if _crng >= i_min_rng * ATR   // FIX 9 also applies to cascade
-        if TR_DIR == "LONG" and TR_TP1_PX > TR_ENTRY_PX
-            _ce   = TR_ENTRY_PX + i_fib_entry * _crng
-            _sa   = _ce - i_atr_stop * ATR
-            _sp   = TR_ENTRY_PX * (1.0 - i_stop_pct)
-            _cs   = math.min(_sa, _sp)
-            FIB_HIGH := TR_TP1_PX;  FIB_LOW := TR_ENTRY_PX;  FIB_SIDE := 1
-            SIG_DIR   := "LONG";  SIG_ENTRY := _ce;  SIG_STOP := _cs
-            SIG_TP1   := _ce + 1.618*_crng;  SIG_TP2 := _ce + 2.272*_crng
-            SIG_TP3   := _ce + 2.618*_crng
-            SIG_ARMED := bar_index;  SIG_CONF := false;  SIG_SW := 1
-            _clear_fib_drawings()
-            _draw_fib(TR_TP1_PX, TR_ENTRY_PX, 1, _ce, SIG_TP1, SIG_TP2, SIG_TP3)
-        else if TR_DIR == "SHORT" and TR_TP1_PX < TR_ENTRY_PX
-            _ce   = TR_ENTRY_PX - i_fib_entry * _crng
-            _sa   = _ce + i_atr_stop * ATR
-            _sp   = TR_ENTRY_PX * (1.0 + i_stop_pct)
-            _cs   = math.max(_sa, _sp)
-            FIB_HIGH := TR_ENTRY_PX;  FIB_LOW := TR_TP1_PX;  FIB_SIDE := -1
-            SIG_DIR   := "SHORT";  SIG_ENTRY := _ce;  SIG_STOP := _cs
-            SIG_TP1   := _ce - 1.618*_crng;  SIG_TP2 := _ce - 2.272*_crng
-            SIG_TP3   := _ce - 2.618*_crng
-            SIG_ARMED := bar_index;  SIG_CONF := false;  SIG_SW := 1
-            _clear_fib_drawings()
-            _draw_fib(TR_ENTRY_PX, TR_TP1_PX, -1, _ce, SIG_TP1, SIG_TP2, SIG_TP3)
-    // Reset cascade state regardless of whether range was valid
-    TP1_HIT    := false
+    if TR_DIR == "LONG" and TR_TP1_PX > TR_ENTRY_PX
+        _arm_long_fib(TR_TP1_PX, TR_ENTRY_PX, 1)
+    else if TR_DIR == "SHORT" and TR_TP1_PX < TR_ENTRY_PX
+        _arm_short_fib(TR_ENTRY_PX, TR_TP1_PX, 1)
+    TP1_HIT     := false
     TR_ENTRY_PX := na;  TR_TP1_PX := na;  TR_TP3_PX := na
 
 // ══════════════════════════════════════════════════════════════════
@@ -365,7 +342,7 @@ if is_ph
         else if BIAS == "DOWNTREND"
             if not na(LH_p) and ph_p > LH_p * (1.0 + i_tol)
                 if not IN_TRADE and not na(LL_p)
-                    _arm_long_fib(LH_p, LL_p, trend_cnt)
+                    _arm_long_fib(ph_p, LL_p, trend_cnt)
                 BIAS := "UPTREND";  trend_cnt := 1
                 HH_p := ph_p;  HH_b := ph_b
                 HL_p := LL_p;  HL_b := LL_b
@@ -409,7 +386,7 @@ if is_pl
                     _arm_long_fib(HH_p, HL_p, trend_cnt)
             else
                 if not IN_TRADE and not na(HH_p)
-                    _arm_short_fib(HH_p, HL_p, trend_cnt)
+                    _arm_short_fib(HH_p, pl_p, trend_cnt)
                 BIAS := "DOWNTREND";  trend_cnt := 1
                 LL_p := pl_p;  LL_b := pl_b
                 LH_p := HH_p;  LH_b := HH_b
@@ -526,7 +503,7 @@ if entry_long
     BE_MOVED    := false
     TP1_HIT     := false
     IN_TRADE    := true
-    ENTRY_SIZE  := na           // will be set on fill bar
+    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate; avoids same-bar TP1 race
     strategy.entry("Long", strategy.long, comment="▲ CHoCH " + str.tostring(i_fib_entry))
     strategy.exit("Long TP1", from_entry="Long",
                   qty_percent=34,  limit=SIG_TP1, comment_profit="✔ TP1 1.618")
@@ -546,7 +523,7 @@ if entry_short
     BE_MOVED    := false
     TP1_HIT     := false
     IN_TRADE    := true
-    ENTRY_SIZE  := na
+    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate; avoids same-bar TP1 race
     strategy.entry("Short", strategy.short, comment="▼ CHoCH " + str.tostring(i_fib_entry))
     strategy.exit("Short TP1", from_entry="Short",
                   qty_percent=34,  limit=SIG_TP1, comment_profit="✔ TP1 1.618")
@@ -562,30 +539,28 @@ if entry_short
 //       FIX 6: capture fill size, detect TP1, move stop to breakeven
 // ══════════════════════════════════════════════════════════════════
 
-// Capture initial fill size (position_size is non-zero one bar after entry)
+// Fallback ENTRY_SIZE capture (fires only if pre-fill estimate was somehow na)
 if IN_TRADE and na(ENTRY_SIZE) and strategy.position_size != 0
     ENTRY_SIZE := math.abs(strategy.position_size)
 
 // FIX 6 – TP1 detection: position reduced to <70% of entry size
-// Cancel original TP3 (which had the hard stop) and re-issue with stop = entry price
+// Cancel original TP3 (hard stop) and re-issue with stop = entry price (breakeven)
 if IN_TRADE and not BE_MOVED and not na(ENTRY_SIZE) and strategy.position_size != 0
     _cur = math.abs(strategy.position_size)
-    if _cur < ENTRY_SIZE * 0.70 and i_be_tp1
-        TP1_HIT  := true
-        BE_MOVED := true
-        if TR_DIR == "LONG"
-            strategy.cancel("Long TP3")
-            strategy.exit("Long TP3", from_entry="Long", qty_percent=100,
-                          limit=TR_TP3_PX, stop=TR_ENTRY_PX,
-                          comment_profit="✔ TP3 2.618", comment_loss="▶ Breakeven")
-        else
-            strategy.cancel("Short TP3")
-            strategy.exit("Short TP3", from_entry="Short", qty_percent=100,
-                          limit=TR_TP3_PX, stop=TR_ENTRY_PX,
-                          comment_profit="✔ TP3 2.618", comment_loss="▶ Breakeven")
-    // Track TP1 hit even if BE is disabled
-    else if _cur < ENTRY_SIZE * 0.70 and not i_be_tp1
+    if _cur < ENTRY_SIZE * 0.70
         TP1_HIT := true
+        if i_be_tp1
+            BE_MOVED := true
+            if TR_DIR == "LONG"
+                strategy.cancel("Long TP3")
+                strategy.exit("Long TP3", from_entry="Long", qty_percent=100,
+                              limit=TR_TP3_PX, stop=TR_ENTRY_PX,
+                              comment_profit="✔ TP3 2.618", comment_loss="▶ Breakeven")
+            else
+                strategy.cancel("Short TP3")
+                strategy.exit("Short TP3", from_entry="Short", qty_percent=100,
+                              limit=TR_TP3_PX, stop=TR_ENTRY_PX,
+                              comment_profit="✔ TP3 2.618", comment_loss="▶ Breakeven")
 
 // ══════════════════════════════════════════════════════════════════
 //  §19  CLOSE TRADE — early exit / CHoCH flip
@@ -602,11 +577,15 @@ if v_early and IN_TRADE and strategy.opentrades > 0
 
 if choch_dn and strategy.position_size > 0
     strategy.close_all(comment="CHoCH ↓ Flip")
-    IN_TRADE := false
+    IN_TRADE    := false
+    TP1_HIT     := false
+    TR_ENTRY_PX := na;  TR_TP1_PX := na;  TR_TP3_PX := na
 
 if choch_up and strategy.position_size < 0
     strategy.close_all(comment="CHoCH ↑ Flip")
-    IN_TRADE := false
+    IN_TRADE    := false
+    TP1_HIT     := false
+    TR_ENTRY_PX := na;  TR_TP1_PX := na;  TR_TP3_PX := na
 
 // ══════════════════════════════════════════════════════════════════
 //  §20  VISUALS
