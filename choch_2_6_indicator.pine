@@ -12,13 +12,23 @@
 // ║     V3  V2 + rejection candle + RSI side + early exit ~62–69% WR      ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
-indicator("CHoCH Bias Pro [v6]",
-          shorttitle          = "CHoCH Pro",
-          overlay             = true,
-          max_lines_count     = 500,
-          max_labels_count    = 500,
-          max_boxes_count     = 200,
-          max_polylines_count = 20)
+strategy("CHoCH Bias Pro [v6]",
+         shorttitle              = "CHoCH Pro",
+         overlay                 = true,
+         initial_capital         = 10000,
+         currency                = currency.USD,
+         default_qty_type        = strategy.percent_of_equity,
+         default_qty_value       = 100,
+         commission_type         = strategy.commission.percent,
+         commission_value        = 0.05,
+         slippage                = 2,
+         pyramiding              = 0,
+         calc_on_every_tick      = false,
+         process_orders_on_close = false,
+         max_lines_count         = 500,
+         max_labels_count        = 500,
+         max_boxes_count         = 200,
+         max_polylines_count     = 20)
 
 // ══════════════════════════════════════════════════════════════════
 //  §1  I N P U T S
@@ -143,13 +153,6 @@ var line   L_ENTRY  = na
 var line   L_SL     = na
 var line   L_TP     = na
 var box    B_ENTRY  = na
-
-// Stats
-var int   ST_TOTAL  = 0
-var int   ST_WINS   = 0
-var int   ST_LOSSES = 0
-var float ST_WIN_S  = 0.0
-var float ST_LOSS_S = 0.0
 
 // Polyline for swing structure
 var array<chart.point> sw_pts  = array.new<chart.point>()
@@ -502,14 +505,23 @@ if entry_long or entry_short
     _risk       = math.abs(TR_ENTRY - TR_STOP)
     TR_TP      := TR_DIR == "LONG" ? TR_ENTRY + _risk * i_tp_rr : TR_ENTRY - _risk * i_tp_rr
     TR_BAR     := bar_index
-    ST_TOTAL   += 1
     // Clear signal
     SIG_DIR    := na
-    SIG_ENTRY := na
-    SIG_STOP := na
+    SIG_ENTRY  := na
+    SIG_STOP   := na
     SIG_ARMED  := na
-    SIG_CONF  := false
-    SIG_SW := 0
+    SIG_CONF   := false
+    SIG_SW     := 0
+
+    // Strategy orders
+    if entry_long
+        strategy.entry("Long",  strategy.long,  limit=TR_ENTRY, comment="▲ CHoCH " + str.tostring(i_mult))
+        strategy.exit ("Long Exit",  from_entry="Long",  limit=TR_TP, stop=TR_STOP,
+                       comment_profit="✔ TP", comment_loss="✗ SL")
+    else
+        strategy.entry("Short", strategy.short, limit=TR_ENTRY, comment="▼ CHoCH " + str.tostring(i_mult))
+        strategy.exit ("Short Exit", from_entry="Short", limit=TR_TP, stop=TR_STOP,
+                       comment_profit="✔ TP", comment_loss="✗ SL")
 
     // Draw level lines
     if i_entry_v
@@ -530,71 +542,42 @@ if entry_long or entry_short
 // ══════════════════════════════════════════════════════════════════
 //  §14  EARLY  EXIT  (V3 only — no follow-through next bar)
 // ══════════════════════════════════════════════════════════════════
-if v_early and IN_TRADE and bar_index == TR_BAR + 1
-    _failed = (TR_DIR == "LONG" and close < TR_ENTRY) or (TR_DIR == "SHORT" and close > TR_ENTRY)
-    if _failed
-        _pnl = TR_DIR == "LONG" ? (close - TR_ENTRY) / TR_ENTRY * 100
-                                 : (TR_ENTRY - close) / TR_ENTRY * 100
-        IN_TRADE    := false
-        ST_LOSSES   += 1
-        ST_LOSS_S   += math.abs(_pnl)
-        if i_result_v
-            label.new(bar_index, close,
-                      "✗ early\n" + str.tostring(_pnl, "#.##") + "%",
-                      color=color.new(color.red, 8), textcolor=color.white,
-                      style=label.style_label_up, size=size.small)
-        line.delete(L_ENTRY)
-        line.delete(L_SL)
-        line.delete(L_TP)
+if v_early and IN_TRADE and strategy.opentrades > 0
+    _fill_bar = strategy.opentrades.entry_bar_index(0)
+    if bar_index == _fill_bar + 1
+        _avg  = strategy.position_avg_price
+        _fail = (strategy.position_size > 0 and close < _avg) or
+                (strategy.position_size < 0 and close > _avg)
+        if _fail
+            strategy.close_all(comment="⚡ early")
 
 // ══════════════════════════════════════════════════════════════════
-//  §15  STOP  LOSS  HIT
+//  §15  SYNC  TRADE  STATE  WITH  STRATEGY  ENGINE
 // ══════════════════════════════════════════════════════════════════
-if IN_TRADE
-    _sl_hit = (TR_DIR == "LONG"  and low  <= TR_STOP) or
-              (TR_DIR == "SHORT" and high >= TR_STOP)
-    if _sl_hit
-        _pnl = TR_DIR == "LONG" ? (TR_STOP - TR_ENTRY) / TR_ENTRY * 100
-                                 : (TR_ENTRY - TR_STOP) / TR_ENTRY * 100
-        IN_TRADE  := false
-        ST_LOSSES += 1
-        ST_LOSS_S += math.abs(_pnl)
-        if i_result_v
-            _y = TR_DIR == "LONG" ? TR_STOP * 0.9985 : TR_STOP * 1.0015
-            label.new(bar_index, _y,
-                      "✗ SL  " + str.tostring(_pnl, "#.##") + "%",
-                      color=color.new(color.red, 8), textcolor=color.white,
-                      style=TR_DIR=="LONG" ? label.style_label_up : label.style_label_down,
-                      size=size.small)
-        line.delete(L_ENTRY)
-        line.delete(L_SL)
-        line.delete(L_TP)
+if IN_TRADE and strategy.position_size == 0
+    IN_TRADE := false
+    if i_result_v and strategy.closedtrades > 0
+        _ct   = strategy.closedtrades - 1
+        _pnl  = strategy.closedtrades.profit(_ct)
+        _won  = _pnl > 0
+        _epx  = strategy.closedtrades.entry_price(_ct)
+        _expx = strategy.closedtrades.exit_price(_ct)
+        _pct  = _epx > 0 ? math.abs(_expx - _epx) / _epx * 100 : 0.0
+        _pct_s = _won ? _pct : -_pct
+        _y    = TR_DIR == "LONG" ? (_won ? TR_TP * 1.0015 : TR_STOP * 0.9985)
+                                 : (_won ? TR_TP * 0.9985 : TR_STOP * 1.0015)
+        label.new(bar_index, _y,
+                  (_won ? "✔ TP  +" : "✗ SL  ") + str.tostring(_pct_s, "#.##") + "%",
+                  color     = _won ? color.new(color.teal, 8) : color.new(color.red, 8),
+                  textcolor = color.white,
+                  style     = (TR_DIR == "LONG") == _won ? label.style_label_down : label.style_label_up,
+                  size      = size.small)
+    line.delete(L_ENTRY)
+    line.delete(L_SL)
+    line.delete(L_TP)
 
 // ══════════════════════════════════════════════════════════════════
-//  §16  TAKE  PROFIT  HIT
-// ══════════════════════════════════════════════════════════════════
-if IN_TRADE
-    _tp_hit = (TR_DIR == "LONG"  and high >= TR_TP) or
-              (TR_DIR == "SHORT" and low  <= TR_TP)
-    if _tp_hit
-        _pnl = TR_DIR == "LONG" ? (TR_TP - TR_ENTRY) / TR_ENTRY * 100
-                                 : (TR_ENTRY - TR_TP) / TR_ENTRY * 100
-        IN_TRADE := false
-        ST_WINS  += 1
-        ST_WIN_S += _pnl
-        if i_result_v
-            _y = TR_DIR == "LONG" ? TR_TP * 1.0015 : TR_TP * 0.9985
-            label.new(bar_index, _y,
-                      "✔ TP  +" + str.tostring(_pnl, "#.##") + "%",
-                      color=color.new(color.teal, 8), textcolor=color.white,
-                      style=TR_DIR=="LONG" ? label.style_label_down : label.style_label_up,
-                      size=size.small)
-        line.delete(L_ENTRY)
-        line.delete(L_SL)
-        line.delete(L_TP)
-
-// ══════════════════════════════════════════════════════════════════
-//  §17  V I S U A L S
+//  §16  V I S U A L S
 // ══════════════════════════════════════════════════════════════════
 
 // — Bias background —
@@ -672,7 +655,7 @@ if i_entry_v and (entry_long or entry_short)
 barcolor(i_bar_col and IN_TRADE ? (TR_DIR == "LONG" ? color.new(color.teal, 45) : color.new(color.red, 45)) : na)
 
 // ══════════════════════════════════════════════════════════════════
-//  §18  D A S H B O A R D
+//  §17  D A S H B O A R D
 // ══════════════════════════════════════════════════════════════════
 if i_dash and barstate.islast
     _pos = switch i_dash_pos
@@ -681,18 +664,20 @@ if i_dash and barstate.islast
         "Bottom Left"  => position.bottom_left
         =>                position.bottom_right
 
-    DASH := table.new(_pos, 2, 12,
+    DASH := table.new(_pos, 2, 14,
                       bgcolor      = color.new(color.gray, 88),
                       border_color = color.new(color.gray, 55),
                       border_width = 1,
                       frame_color  = color.new(color.silver, 25),
                       frame_width  = 2)
 
-    _wr    = ST_TOTAL  > 0 ? ST_WINS   / ST_TOTAL  * 100  : 0.0
-    _avgw  = ST_WINS   > 0 ? ST_WIN_S  / ST_WINS          : 0.0
-    _avgl  = ST_LOSSES > 0 ? ST_LOSS_S / ST_LOSSES        : 0.0
-    _rr    = _avgl > 0     ? _avgw / _avgl                 : 0.0
+    _net   = strategy.netprofit
+    _wr    = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100 : 0.0
+    _avgw  = strategy.wintrades  > 0 ? strategy.grossprofit / strategy.wintrades  : 0.0
+    _avgl  = strategy.losstrades > 0 ? math.abs(strategy.grossloss) / strategy.losstrades : 0.0
+    _rr    = _avgl > 0 ? _avgw / _avgl : 0.0
     _exp   = _wr / 100 * _avgw - (1.0 - _wr / 100) * _avgl
+    _dd    = strategy.max_drawdown_percent
     _sig_s = not na(SIG_DIR) ? SIG_DIR + " @ " + str.tostring(SIG_ENTRY, "#.##") : "—"
     _trd_s = IN_TRADE ? TR_DIR + " @ " + str.tostring(TR_ENTRY, "#.##") : "—"
 
@@ -706,20 +691,22 @@ if i_dash and barstate.islast
                text_color=BIAS=="UPTREND"?color.teal:BIAS=="DOWNTREND"?color.red:color.gray,
                text_size=size.small, bgcolor=_hdr_bg, text_halign=text.align_right)
 
-    add_row(DASH,  1, " Trades",      str.tostring(ST_TOTAL),                    color.white)
-    add_row(DASH,  2, " Wins / Loss", str.tostring(ST_WINS) + " / " + str.tostring(ST_LOSSES), color.white)
-    add_row(DASH,  3, " Win Rate",    str.tostring(_wr,  "#.1") + "%",            _wr>=65?color.lime:_wr>=50?color.yellow:color.red)
-    add_row(DASH,  4, " Avg Win",     "+" + str.tostring(_avgw, "#.2") + "%",     color.new(color.lime, 10))
-    add_row(DASH,  5, " Avg Loss",    "−" + str.tostring(_avgl, "#.2") + "%",     color.new(color.red,  10))
-    add_row(DASH,  6, " R:R",         str.tostring(_rr,  "#.2"),                  _rr>=2?color.lime:_rr>=1?color.yellow:color.red)
-    add_row(DASH,  7, " Expectancy",  (_exp>=0?"+":"") + str.tostring(_exp,"#.2")+"%", _exp>0?color.lime:color.red)
-    add_row(DASH,  8, " ADX",         str.tostring(ADX, "#.1"),                   ADX>v_adx_thr?color.lime:color.yellow)
-    add_row(DASH,  9, " RSI",         str.tostring(RSI, "#.1"),                   RSI>70?color.orange:RSI<30?color.aqua:color.white)
-    add_row(DASH, 10, " Signal",      _sig_s,                                     color.yellow)
-    add_row(DASH, 11, " In Trade",    _trd_s,                                     IN_TRADE?color.orange:color.new(color.gray,20))
+    add_row(DASH,  1, " Trades",      str.tostring(strategy.closedtrades),           color.white)
+    add_row(DASH,  2, " Wins / Loss", str.tostring(strategy.wintrades) + " / " + str.tostring(strategy.losstrades), color.white)
+    add_row(DASH,  3, " Win Rate",    str.tostring(_wr,  "#.1") + "%",               _wr>=65?color.lime:_wr>=50?color.yellow:color.red)
+    add_row(DASH,  4, " Avg Win $",   "$+" + str.tostring(_avgw, "#.2"),             color.new(color.lime, 10))
+    add_row(DASH,  5, " Avg Loss $",  "$−" + str.tostring(_avgl, "#.2"),             color.new(color.red,  10))
+    add_row(DASH,  6, " R:R",         str.tostring(_rr,  "#.2"),                     _rr>=2?color.lime:_rr>=1?color.yellow:color.red)
+    add_row(DASH,  7, " Net P&L",     (_net>=0?"$+":"$") + str.tostring(_net,"#.2"), _net>=0?color.lime:color.red)
+    add_row(DASH,  8, " Max DD",      str.tostring(_dd, "#.1") + "%",                _dd<=10?color.lime:_dd<=20?color.yellow:color.red)
+    add_row(DASH,  9, " ADX",         str.tostring(ADX, "#.1"),                      ADX>v_adx_thr?color.lime:color.yellow)
+    add_row(DASH, 10, " RSI",         str.tostring(RSI, "#.1"),                      RSI>70?color.orange:RSI<30?color.aqua:color.white)
+    add_row(DASH, 11, " Equity",      "$" + str.tostring(strategy.equity, "#.2"),    color.white)
+    add_row(DASH, 12, " Signal",      _sig_s,                                        color.yellow)
+    add_row(DASH, 13, " In Trade",    _trd_s,                                        IN_TRADE?color.orange:color.new(color.gray,20))
 
 // ══════════════════════════════════════════════════════════════════
-//  §19  P L O T S  (for alert {{plot}} substitution)
+//  §18  P L O T S  (for alert {{plot}} substitution)
 // ══════════════════════════════════════════════════════════════════
 plot(IN_TRADE ? TR_STOP  : na, "Active SL",    color=na, display=display.none)
 plot(IN_TRADE ? TR_TP    : na, "Active TP",    color=na, display=display.none)
@@ -731,7 +718,7 @@ plotshape(entry_short, style=shape.triangledown, location=location.abovebar,
           color=color.new(color.red, 0), size=size.small, title="Short Entry")
 
 // ══════════════════════════════════════════════════════════════════
-//  §20  A L E R T S
+//  §19  A L E R T S
 // ══════════════════════════════════════════════════════════════════
 alertcondition(entry_long,
                title   = "LONG Entry Signal",

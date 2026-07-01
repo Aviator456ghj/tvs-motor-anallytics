@@ -196,7 +196,7 @@ var array<box>         FIB_BOXES = array.new<box>()
 var array<line>        FIB_LINES = array.new<line>()
 
 // ══════════════════════════════════════════════════════════════════
-//  §8  HELPER FUNCTIONS
+//  §8  HELPER FUNCTIONS  (arrays only — safe in v6)
 // ══════════════════════════════════════════════════════════════════
 _clear_fib_drawings() =>
     for b in FIB_BOXES
@@ -205,19 +205,6 @@ _clear_fib_drawings() =>
     for l in FIB_LINES
         line.delete(l)
     FIB_LINES.clear()
-
-_clear_signal() =>
-    SIG_DIR   := na
-    SIG_ENTRY := na
-    SIG_STOP := na
-    SIG_TP1   := na
-    SIG_TP2  := na
-    SIG_TP3 := na
-    SIG_ARMED := na
-    SIG_CONF := false
-    SIG_SW := 0
-    box.delete(SIG_BOX)
-    line.delete(SIG_LINE)
 
 dash_row(table t, int r, string lbl, string val, color vc) =>
     table.cell(t, 0, r, lbl, text_color=color.new(color.silver,15),
@@ -262,63 +249,7 @@ _draw_fib(float fh, float fl, int side, float entry, float tp1, float tp2, float
         FIB_LINES.push(line.new(x1, tp3, x2, tp3, color=color.new(color.silver,22), width=2))
 
 // ══════════════════════════════════════════════════════════════════
-//  §9  FIB CAPTURE — called BEFORE state machine resets H/L anchors
-//      FIX 4: stop = most protective of pct-buffer or ATR distance
-//      FIX 9: skip if swing range < i_min_rng × ATR
-// ══════════════════════════════════════════════════════════════════
-_arm_long_fib(float lh, float ll, int sw) =>
-    rng = lh - ll
-    // FIX 9: skip noise swings
-    if rng >= i_min_rng * ATR
-        entry  = ll + i_fib_entry * rng                    // FIX 1: configurable level
-        stop_p = ll * (1.0 - i_stop_pct)                  // pct-buffer below anchor
-        stop_a = entry - i_atr_stop * ATR                  // FIX 4: ATR-based minimum risk
-        stop   = math.min(stop_p, stop_a)                  // take the lower (more room)
-        tp1    = entry + 1.618 * rng
-        tp2    = entry + 2.272 * rng
-        tp3    = entry + 2.618 * rng
-        FIB_HIGH  := lh
-        FIB_LOW  := ll
-        FIB_SIDE := 1
-        SIG_DIR   := "LONG"
-        SIG_ENTRY := entry
-        SIG_STOP := stop
-        SIG_TP1   := tp1
-        SIG_TP2 := tp2
-        SIG_TP3 := tp3
-        SIG_ARMED := bar_index
-        SIG_CONF := false
-        SIG_SW := sw
-        _clear_fib_drawings()
-        _draw_fib(lh, ll, 1, entry, tp1, tp2, tp3)
-
-_arm_short_fib(float hh, float hl, int sw) =>
-    rng = hh - hl
-    if rng >= i_min_rng * ATR                              // FIX 9
-        entry  = hh - i_fib_entry * rng                   // FIX 1
-        stop_p = hh * (1.0 + i_stop_pct)
-        stop_a = entry + i_atr_stop * ATR                 // FIX 4
-        stop   = math.max(stop_p, stop_a)
-        tp1    = entry - 1.618 * rng
-        tp2    = entry - 2.272 * rng
-        tp3    = entry - 2.618 * rng
-        FIB_HIGH  := hh
-        FIB_LOW  := hl
-        FIB_SIDE := -1
-        SIG_DIR   := "SHORT"
-        SIG_ENTRY := entry
-        SIG_STOP := stop
-        SIG_TP1   := tp1
-        SIG_TP2 := tp2
-        SIG_TP3 := tp3
-        SIG_ARMED := bar_index
-        SIG_CONF := false
-        SIG_SW := sw
-        _clear_fib_drawings()
-        _draw_fib(hh, hl, -1, entry, tp1, tp2, tp3)
-
-// ══════════════════════════════════════════════════════════════════
-//  §10  SYNC TRADE STATE
+//  §9  SYNC TRADE STATE
 // ══════════════════════════════════════════════════════════════════
 if IN_TRADE and strategy.position_size == 0
     IN_TRADE   := false
@@ -327,22 +258,66 @@ if IN_TRADE and strategy.position_size == 0
     // TP1_HIT and TR_* are preserved here for cascade logic below
 
 // ══════════════════════════════════════════════════════════════════
-//  §11  FIX 8 — CASCADE FIB after trade closes with TP1 hit
+//  §10  FIX 8 — CASCADE FIB after trade closes with TP1 hit
 //       Arms a new signal from (entry→TP1) range so the next
 //       pullback to 0.618 of that sub-swing gets traded automatically
 // ══════════════════════════════════════════════════════════════════
 if i_cascade and TP1_HIT and not IN_TRADE and not na(TR_ENTRY_PX) and not na(TR_TP1_PX)
     if TR_DIR == "LONG" and TR_TP1_PX > TR_ENTRY_PX
-        _arm_long_fib(TR_TP1_PX, TR_ENTRY_PX, 1)
+        _lrng = TR_TP1_PX - TR_ENTRY_PX
+        if _lrng >= i_min_rng * ATR
+            _lentry  = TR_ENTRY_PX + i_fib_entry * _lrng
+            _lstop_p = TR_ENTRY_PX * (1.0 - i_stop_pct)
+            _lstop_a = _lentry - i_atr_stop * ATR
+            _lstop   = math.min(_lstop_p, _lstop_a)
+            _ltp1    = _lentry + 1.618 * _lrng
+            _ltp2    = _lentry + 2.272 * _lrng
+            _ltp3    = _lentry + 2.618 * _lrng
+            FIB_HIGH  := TR_TP1_PX
+            FIB_LOW   := TR_ENTRY_PX
+            FIB_SIDE  := 1
+            SIG_DIR   := "LONG"
+            SIG_ENTRY := _lentry
+            SIG_STOP  := _lstop
+            SIG_TP1   := _ltp1
+            SIG_TP2   := _ltp2
+            SIG_TP3   := _ltp3
+            SIG_ARMED := bar_index
+            SIG_CONF  := false
+            SIG_SW    := 1
+            _clear_fib_drawings()
+            _draw_fib(TR_TP1_PX, TR_ENTRY_PX, 1, _lentry, _ltp1, _ltp2, _ltp3)
     else if TR_DIR == "SHORT" and TR_TP1_PX < TR_ENTRY_PX
-        _arm_short_fib(TR_ENTRY_PX, TR_TP1_PX, 1)
+        _srng = TR_ENTRY_PX - TR_TP1_PX
+        if _srng >= i_min_rng * ATR
+            _sentry  = TR_ENTRY_PX - i_fib_entry * _srng
+            _sstop_p = TR_ENTRY_PX * (1.0 + i_stop_pct)
+            _sstop_a = _sentry + i_atr_stop * ATR
+            _sstop   = math.max(_sstop_p, _sstop_a)
+            _stp1    = _sentry - 1.618 * _srng
+            _stp2    = _sentry - 2.272 * _srng
+            _stp3    = _sentry - 2.618 * _srng
+            FIB_HIGH  := TR_ENTRY_PX
+            FIB_LOW   := TR_TP1_PX
+            FIB_SIDE  := -1
+            SIG_DIR   := "SHORT"
+            SIG_ENTRY := _sentry
+            SIG_STOP  := _sstop
+            SIG_TP1   := _stp1
+            SIG_TP2   := _stp2
+            SIG_TP3   := _stp3
+            SIG_ARMED := bar_index
+            SIG_CONF  := false
+            SIG_SW    := 1
+            _clear_fib_drawings()
+            _draw_fib(TR_ENTRY_PX, TR_TP1_PX, -1, _sentry, _stp1, _stp2, _stp3)
     TP1_HIT     := false
     TR_ENTRY_PX := na
-    TR_TP1_PX := na
-    TR_TP3_PX := na
+    TR_TP1_PX   := na
+    TR_TP3_PX   := na
 
 // ══════════════════════════════════════════════════════════════════
-//  §12  PROCESS PIVOT HIGH
+//  §11  PROCESS PIVOT HIGH
 // ══════════════════════════════════════════════════════════════════
 if is_ph
     ph_p = ph_raw
@@ -371,7 +346,18 @@ if is_ph
                 HH_p := ph_p
                 HH_b := ph_b
                 trend_cnt += 1
-                _clear_signal()
+                // inline _clear_signal()
+                SIG_DIR   := na
+                SIG_ENTRY := na
+                SIG_STOP  := na
+                SIG_TP1   := na
+                SIG_TP2   := na
+                SIG_TP3   := na
+                SIG_ARMED := na
+                SIG_CONF  := false
+                SIG_SW    := 0
+                box.delete(SIG_BOX)
+                line.delete(SIG_LINE)
             else
                 LH_p := ph_p
                 LH_b := ph_b
@@ -379,7 +365,30 @@ if is_ph
         else if BIAS == "DOWNTREND"
             if not na(LH_p) and ph_p > LH_p * (1.0 + i_tol)
                 if not IN_TRADE and not na(LL_p)
-                    _arm_long_fib(ph_p, LL_p, trend_cnt)
+                    // inline _arm_long_fib(ph_p, LL_p, trend_cnt)
+                    _lrng = ph_p - LL_p
+                    if _lrng >= i_min_rng * ATR
+                        _lentry  = LL_p + i_fib_entry * _lrng
+                        _lstop_p = LL_p * (1.0 - i_stop_pct)
+                        _lstop_a = _lentry - i_atr_stop * ATR
+                        _lstop   = math.min(_lstop_p, _lstop_a)
+                        _ltp1    = _lentry + 1.618 * _lrng
+                        _ltp2    = _lentry + 2.272 * _lrng
+                        _ltp3    = _lentry + 2.618 * _lrng
+                        FIB_HIGH  := ph_p
+                        FIB_LOW   := LL_p
+                        FIB_SIDE  := 1
+                        SIG_DIR   := "LONG"
+                        SIG_ENTRY := _lentry
+                        SIG_STOP  := _lstop
+                        SIG_TP1   := _ltp1
+                        SIG_TP2   := _ltp2
+                        SIG_TP3   := _ltp3
+                        SIG_ARMED := bar_index
+                        SIG_CONF  := false
+                        SIG_SW    := trend_cnt
+                        _clear_fib_drawings()
+                        _draw_fib(ph_p, LL_p, 1, _lentry, _ltp1, _ltp2, _ltp3)
                 BIAS := "UPTREND"
                 trend_cnt := 1
                 HH_p := ph_p
@@ -392,15 +401,49 @@ if is_ph
                 LH_p := ph_p
                 LH_b := ph_b
                 trend_cnt += 1
-                _clear_signal()
+                // inline _clear_signal()
+                SIG_DIR   := na
+                SIG_ENTRY := na
+                SIG_STOP  := na
+                SIG_TP1   := na
+                SIG_TP2   := na
+                SIG_TP3   := na
+                SIG_ARMED := na
+                SIG_CONF  := false
+                SIG_SW    := 0
+                box.delete(SIG_BOX)
+                line.delete(SIG_LINE)
                 if not IN_TRADE and not na(LL_p)
-                    _arm_short_fib(LH_p, LL_p, trend_cnt)
+                    // inline _arm_short_fib(LH_p, LL_p, trend_cnt)
+                    _srng = LH_p - LL_p
+                    if _srng >= i_min_rng * ATR
+                        _sentry  = LH_p - i_fib_entry * _srng
+                        _sstop_p = LH_p * (1.0 + i_stop_pct)
+                        _sstop_a = _sentry + i_atr_stop * ATR
+                        _sstop   = math.max(_sstop_p, _sstop_a)
+                        _stp1    = _sentry - 1.618 * _srng
+                        _stp2    = _sentry - 2.272 * _srng
+                        _stp3    = _sentry - 2.618 * _srng
+                        FIB_HIGH  := LH_p
+                        FIB_LOW   := LL_p
+                        FIB_SIDE  := -1
+                        SIG_DIR   := "SHORT"
+                        SIG_ENTRY := _sentry
+                        SIG_STOP  := _sstop
+                        SIG_TP1   := _stp1
+                        SIG_TP2   := _stp2
+                        SIG_TP3   := _stp3
+                        SIG_ARMED := bar_index
+                        SIG_CONF  := false
+                        SIG_SW    := trend_cnt
+                        _clear_fib_drawings()
+                        _draw_fib(LH_p, LL_p, -1, _sentry, _stp1, _stp2, _stp3)
 
     if i_sw_line
         sw_pts.push(chart.point.from_index(ph_b, ph_p))
 
 // ══════════════════════════════════════════════════════════════════
-//  §13  PROCESS PIVOT LOW
+//  §12  PROCESS PIVOT LOW
 // ══════════════════════════════════════════════════════════════════
 if is_pl
     pl_p = pl_raw
@@ -433,12 +476,69 @@ if is_pl
                 HL_p := pl_p
                 HL_b := pl_b
                 trend_cnt += 1
-                _clear_signal()
+                // inline _clear_signal()
+                SIG_DIR   := na
+                SIG_ENTRY := na
+                SIG_STOP  := na
+                SIG_TP1   := na
+                SIG_TP2   := na
+                SIG_TP3   := na
+                SIG_ARMED := na
+                SIG_CONF  := false
+                SIG_SW    := 0
+                box.delete(SIG_BOX)
+                line.delete(SIG_LINE)
                 if not IN_TRADE and not na(HH_p)
-                    _arm_long_fib(HH_p, HL_p, trend_cnt)
+                    // inline _arm_long_fib(HH_p, HL_p, trend_cnt)
+                    _lrng = HH_p - HL_p
+                    if _lrng >= i_min_rng * ATR
+                        _lentry  = HL_p + i_fib_entry * _lrng
+                        _lstop_p = HL_p * (1.0 - i_stop_pct)
+                        _lstop_a = _lentry - i_atr_stop * ATR
+                        _lstop   = math.min(_lstop_p, _lstop_a)
+                        _ltp1    = _lentry + 1.618 * _lrng
+                        _ltp2    = _lentry + 2.272 * _lrng
+                        _ltp3    = _lentry + 2.618 * _lrng
+                        FIB_HIGH  := HH_p
+                        FIB_LOW   := HL_p
+                        FIB_SIDE  := 1
+                        SIG_DIR   := "LONG"
+                        SIG_ENTRY := _lentry
+                        SIG_STOP  := _lstop
+                        SIG_TP1   := _ltp1
+                        SIG_TP2   := _ltp2
+                        SIG_TP3   := _ltp3
+                        SIG_ARMED := bar_index
+                        SIG_CONF  := false
+                        SIG_SW    := trend_cnt
+                        _clear_fib_drawings()
+                        _draw_fib(HH_p, HL_p, 1, _lentry, _ltp1, _ltp2, _ltp3)
             else
                 if not IN_TRADE and not na(HH_p)
-                    _arm_short_fib(HH_p, pl_p, trend_cnt)
+                    // inline _arm_short_fib(HH_p, pl_p, trend_cnt)
+                    _srng = HH_p - pl_p
+                    if _srng >= i_min_rng * ATR
+                        _sentry  = HH_p - i_fib_entry * _srng
+                        _sstop_p = HH_p * (1.0 + i_stop_pct)
+                        _sstop_a = _sentry + i_atr_stop * ATR
+                        _sstop   = math.max(_sstop_p, _sstop_a)
+                        _stp1    = _sentry - 1.618 * _srng
+                        _stp2    = _sentry - 2.272 * _srng
+                        _stp3    = _sentry - 2.618 * _srng
+                        FIB_HIGH  := HH_p
+                        FIB_LOW   := pl_p
+                        FIB_SIDE  := -1
+                        SIG_DIR   := "SHORT"
+                        SIG_ENTRY := _sentry
+                        SIG_STOP  := _sstop
+                        SIG_TP1   := _stp1
+                        SIG_TP2   := _stp2
+                        SIG_TP3   := _stp3
+                        SIG_ARMED := bar_index
+                        SIG_CONF  := false
+                        SIG_SW    := trend_cnt
+                        _clear_fib_drawings()
+                        _draw_fib(HH_p, pl_p, -1, _sentry, _stp1, _stp2, _stp3)
                 BIAS := "DOWNTREND"
                 trend_cnt := 1
                 LL_p := pl_p
@@ -453,9 +553,43 @@ if is_pl
                 LL_p := pl_p
                 LL_b := pl_b
                 trend_cnt += 1
-                _clear_signal()
+                // inline _clear_signal()
+                SIG_DIR   := na
+                SIG_ENTRY := na
+                SIG_STOP  := na
+                SIG_TP1   := na
+                SIG_TP2   := na
+                SIG_TP3   := na
+                SIG_ARMED := na
+                SIG_CONF  := false
+                SIG_SW    := 0
+                box.delete(SIG_BOX)
+                line.delete(SIG_LINE)
                 if not IN_TRADE
-                    _arm_short_fib(LH_p, LL_p, trend_cnt)
+                    // inline _arm_short_fib(LH_p, LL_p, trend_cnt)
+                    _srng = LH_p - LL_p
+                    if _srng >= i_min_rng * ATR
+                        _sentry  = LH_p - i_fib_entry * _srng
+                        _sstop_p = LH_p * (1.0 + i_stop_pct)
+                        _sstop_a = _sentry + i_atr_stop * ATR
+                        _sstop   = math.max(_sstop_p, _sstop_a)
+                        _stp1    = _sentry - 1.618 * _srng
+                        _stp2    = _sentry - 2.272 * _srng
+                        _stp3    = _sentry - 2.618 * _srng
+                        FIB_HIGH  := LH_p
+                        FIB_LOW   := LL_p
+                        FIB_SIDE  := -1
+                        SIG_DIR   := "SHORT"
+                        SIG_ENTRY := _sentry
+                        SIG_STOP  := _sstop
+                        SIG_TP1   := _stp1
+                        SIG_TP2   := _stp2
+                        SIG_TP3   := _stp3
+                        SIG_ARMED := bar_index
+                        SIG_CONF  := false
+                        SIG_SW    := trend_cnt
+                        _clear_fib_drawings()
+                        _draw_fib(LH_p, LL_p, -1, _sentry, _stp1, _stp2, _stp3)
             else
                 HL_p := pl_p
                 HL_b := pl_b
@@ -474,7 +608,7 @@ if i_sw_line and (is_ph or is_pl) and sw_pts.size() >= 2
     sw_poly := polyline.new(sw_pts, curved=false, closed=false, line_color=_sc, line_width=2)
 
 // ══════════════════════════════════════════════════════════════════
-//  §14  CLOSE-BASED CHoCH
+//  §13  CLOSE-BASED CHoCH
 // ══════════════════════════════════════════════════════════════════
 choch_dn = false
 choch_up = false
@@ -482,7 +616,30 @@ choch_up = false
 if BIAS == "UPTREND" and not na(HL_p) and close < HL_p * (1.0 - i_tol)
     choch_dn := true
     if not IN_TRADE and not na(HH_p)
-        _arm_short_fib(HH_p, HL_p, trend_cnt)
+        // inline _arm_short_fib(HH_p, HL_p, trend_cnt)
+        _srng = HH_p - HL_p
+        if _srng >= i_min_rng * ATR
+            _sentry  = HH_p - i_fib_entry * _srng
+            _sstop_p = HH_p * (1.0 + i_stop_pct)
+            _sstop_a = _sentry + i_atr_stop * ATR
+            _sstop   = math.max(_sstop_p, _sstop_a)
+            _stp1    = _sentry - 1.618 * _srng
+            _stp2    = _sentry - 2.272 * _srng
+            _stp3    = _sentry - 2.618 * _srng
+            FIB_HIGH  := HH_p
+            FIB_LOW   := HL_p
+            FIB_SIDE  := -1
+            SIG_DIR   := "SHORT"
+            SIG_ENTRY := _sentry
+            SIG_STOP  := _sstop
+            SIG_TP1   := _stp1
+            SIG_TP2   := _stp2
+            SIG_TP3   := _stp3
+            SIG_ARMED := bar_index
+            SIG_CONF  := false
+            SIG_SW    := trend_cnt
+            _clear_fib_drawings()
+            _draw_fib(HH_p, HL_p, -1, _sentry, _stp1, _stp2, _stp3)
     BIAS := "DOWNTREND"
     trend_cnt := 1
     LH_p := na(HH_p) ? LH_p : HH_p
@@ -495,7 +652,30 @@ if BIAS == "UPTREND" and not na(HL_p) and close < HL_p * (1.0 - i_tol)
 else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
     choch_up := true
     if not IN_TRADE and not na(LL_p)
-        _arm_long_fib(LH_p, LL_p, trend_cnt)
+        // inline _arm_long_fib(LH_p, LL_p, trend_cnt)
+        _lrng = LH_p - LL_p
+        if _lrng >= i_min_rng * ATR
+            _lentry  = LL_p + i_fib_entry * _lrng
+            _lstop_p = LL_p * (1.0 - i_stop_pct)
+            _lstop_a = _lentry - i_atr_stop * ATR
+            _lstop   = math.min(_lstop_p, _lstop_a)
+            _ltp1    = _lentry + 1.618 * _lrng
+            _ltp2    = _lentry + 2.272 * _lrng
+            _ltp3    = _lentry + 2.618 * _lrng
+            FIB_HIGH  := LH_p
+            FIB_LOW   := LL_p
+            FIB_SIDE  := 1
+            SIG_DIR   := "LONG"
+            SIG_ENTRY := _lentry
+            SIG_STOP  := _lstop
+            SIG_TP1   := _ltp1
+            SIG_TP2   := _ltp2
+            SIG_TP3   := _ltp3
+            SIG_ARMED := bar_index
+            SIG_CONF  := false
+            SIG_SW    := trend_cnt
+            _clear_fib_drawings()
+            _draw_fib(LH_p, LL_p, 1, _lentry, _ltp1, _ltp2, _ltp3)
     BIAS := "UPTREND"
     trend_cnt := 1
     HH_p := LH_p
@@ -506,15 +686,26 @@ else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
     LL_p := na
 
 // ══════════════════════════════════════════════════════════════════
-//  §15  SIGNAL MANAGEMENT
+//  §14  SIGNAL MANAGEMENT
 // ══════════════════════════════════════════════════════════════════
 
 // FIX 3 – stale anchor expiry (clears both signal and fib drawings)
 if not na(SIG_DIR) and not na(SIG_ARMED) and (bar_index - SIG_ARMED) > v_expiry
-    _clear_signal()
+    // inline _clear_signal()
+    SIG_DIR   := na
+    SIG_ENTRY := na
+    SIG_STOP  := na
+    SIG_TP1   := na
+    SIG_TP2   := na
+    SIG_TP3   := na
+    SIG_ARMED := na
+    SIG_CONF  := false
+    SIG_SW    := 0
+    box.delete(SIG_BOX)
+    line.delete(SIG_LINE)
     _clear_fib_drawings()
     FIB_HIGH := na
-    FIB_LOW := na   // FIX 3: reset stale anchors
+    FIB_LOW  := na   // FIX 3: reset stale anchors
 
 // FIX 2 – false CHoCH invalidation
 // If price closes BEYOND the fib anchor in the direction that invalidates the setup,
@@ -522,10 +713,32 @@ if not na(SIG_DIR) and not na(SIG_ARMED) and (bar_index - SIG_ARMED) > v_expiry
 // short setup cancelled if price breaks above FIB_HIGH.
 if not na(SIG_DIR) and not IN_TRADE
     if SIG_DIR == "LONG"  and not na(FIB_LOW)  and close < FIB_LOW  * (1.0 - i_tol)
-        _clear_signal()
+        // inline _clear_signal()
+        SIG_DIR   := na
+        SIG_ENTRY := na
+        SIG_STOP  := na
+        SIG_TP1   := na
+        SIG_TP2   := na
+        SIG_TP3   := na
+        SIG_ARMED := na
+        SIG_CONF  := false
+        SIG_SW    := 0
+        box.delete(SIG_BOX)
+        line.delete(SIG_LINE)
         _clear_fib_drawings()
     else if SIG_DIR == "SHORT" and not na(FIB_HIGH) and close > FIB_HIGH * (1.0 + i_tol)
-        _clear_signal()
+        // inline _clear_signal()
+        SIG_DIR   := na
+        SIG_ENTRY := na
+        SIG_STOP  := na
+        SIG_TP1   := na
+        SIG_TP2   := na
+        SIG_TP3   := na
+        SIG_ARMED := na
+        SIG_CONF  := false
+        SIG_SW    := 0
+        box.delete(SIG_BOX)
+        line.delete(SIG_LINE)
         _clear_fib_drawings()
 
 // Confirmation: for long, entry is BELOW current price (0.618 pullback zone).
@@ -538,7 +751,7 @@ if not na(SIG_DIR) and not IN_TRADE
         SIG_CONF := true
 
 // ══════════════════════════════════════════════════════════════════
-//  §16  ENTRY FILTERS & TRIGGER
+//  §15  ENTRY FILTERS & TRIGGER
 // ══════════════════════════════════════════════════════════════════
 adx_ok  = ADX > v_adx_thr
 rsi_chk = SIG_DIR == "LONG" ? RSI > 50 : RSI < 50
@@ -558,7 +771,7 @@ if i_fib_cnf
     entry_short := entry_short and close < SIG_ENTRY
 
 // ══════════════════════════════════════════════════════════════════
-//  §17  OPEN TRADE
+//  §16  OPEN TRADE
 //       Three partial exits: 34% @ TP1 · 33% @ TP2 · 33%+SL @ TP3
 // ══════════════════════════════════════════════════════════════════
 if entry_long
@@ -579,7 +792,18 @@ if entry_long
     strategy.exit("Long TP3", from_entry="Long",
                   qty_percent=100, limit=SIG_TP3, stop=SIG_STOP,
                   comment_profit="✔ TP3 2.618", comment_loss="▼ Stop Loss")
-    _clear_signal()
+    // inline _clear_signal()
+    SIG_DIR   := na
+    SIG_ENTRY := na
+    SIG_STOP  := na
+    SIG_TP1   := na
+    SIG_TP2   := na
+    SIG_TP3   := na
+    SIG_ARMED := na
+    SIG_CONF  := false
+    SIG_SW    := 0
+    box.delete(SIG_BOX)
+    line.delete(SIG_LINE)
 
 if entry_short
     TR_DIR      := "SHORT"
@@ -599,10 +823,21 @@ if entry_short
     strategy.exit("Short TP3", from_entry="Short",
                   qty_percent=100, limit=SIG_TP3, stop=SIG_STOP,
                   comment_profit="✔ TP3 2.618", comment_loss="▲ Stop Loss")
-    _clear_signal()
+    // inline _clear_signal()
+    SIG_DIR   := na
+    SIG_ENTRY := na
+    SIG_STOP  := na
+    SIG_TP1   := na
+    SIG_TP2   := na
+    SIG_TP3   := na
+    SIG_ARMED := na
+    SIG_CONF  := false
+    SIG_SW    := 0
+    box.delete(SIG_BOX)
+    line.delete(SIG_LINE)
 
 // ══════════════════════════════════════════════════════════════════
-//  §18  IN-TRADE MANAGEMENT
+//  §17  IN-TRADE MANAGEMENT
 //       FIX 6: capture fill size, detect TP1, move stop to breakeven
 // ══════════════════════════════════════════════════════════════════
 
@@ -630,7 +865,7 @@ if IN_TRADE and not BE_MOVED and not na(ENTRY_SIZE) and strategy.position_size !
                               comment_profit="✔ TP3 2.618", comment_loss="▶ Breakeven")
 
 // ══════════════════════════════════════════════════════════════════
-//  §19  CLOSE TRADE — early exit / CHoCH flip
+//  §18  CLOSE TRADE — early exit / CHoCH flip
 // ══════════════════════════════════════════════════════════════════
 if v_early and IN_TRADE and strategy.opentrades > 0
     _fill_bar = strategy.opentrades.entry_bar_index(0)
@@ -647,19 +882,19 @@ if choch_dn and strategy.position_size > 0
     IN_TRADE    := false
     TP1_HIT     := false
     TR_ENTRY_PX := na
-    TR_TP1_PX := na
-    TR_TP3_PX := na
+    TR_TP1_PX   := na
+    TR_TP3_PX   := na
 
 if choch_up and strategy.position_size < 0
     strategy.close_all(comment="CHoCH ↑ Flip")
     IN_TRADE    := false
     TP1_HIT     := false
     TR_ENTRY_PX := na
-    TR_TP1_PX := na
-    TR_TP3_PX := na
+    TR_TP1_PX   := na
+    TR_TP3_PX   := na
 
 // ══════════════════════════════════════════════════════════════════
-//  §20  VISUALS
+//  §19  VISUALS
 // ══════════════════════════════════════════════════════════════════
 bgcolor(i_bg_v ? (BIAS == "UPTREND"   ? color.new(color.teal,93) :
                   BIAS == "DOWNTREND" ? color.new(color.red, 93) : na) : na, title="Bias Background")
@@ -724,7 +959,7 @@ else if not IN_TRADE and not na(BE_LINE)
 barcolor(i_bar_col and IN_TRADE ? (TR_DIR == "LONG" ? color.new(color.teal,45) : color.new(color.red,45)) : na)
 
 // ══════════════════════════════════════════════════════════════════
-//  §21  DASHBOARD
+//  §20  DASHBOARD
 // ══════════════════════════════════════════════════════════════════
 if i_dash and barstate.islast
     _pos = switch i_dash_pos
@@ -783,7 +1018,7 @@ if i_dash and barstate.islast
     dash_row(DASH, 16, " TP1 Hit",    IN_TRADE ? (TP1_HIT ? "YES" : "no") : "—",   TP1_HIT?color.lime:color.new(color.gray,30))
 
 // ══════════════════════════════════════════════════════════════════
-//  §22  PLOTS & ALERTS
+//  §21  PLOTS & ALERTS
 // ══════════════════════════════════════════════════════════════════
 plot(strategy.position_size != 0 ? strategy.position_avg_price : na,
      "Entry Price", color=na, display=display.none)
