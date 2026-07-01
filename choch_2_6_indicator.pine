@@ -99,15 +99,21 @@ pivot_bar = bar_index[i_swing_n]   // the actual structural bar (lagged)
 var string BIAS      = "NEUTRAL"
 var int    trend_cnt = 0
 
-var float HH_p = na;  var int HH_b = na
-var float HL_p = na;  var int HL_b = na
-var float LH_p = na;  var int LH_b = na
-var float LL_p = na;  var int LL_b = na
+var float HH_p = na
+var int HH_b = na
+var float HL_p = na
+var int HL_b = na
+var float LH_p = na
+var int LH_b = na
+var float LL_p = na
+var int LL_b = na
 
 // Alternating sequence gate: keep only most extreme of consecutive same-type pivots
 var string last_type = "NONE"
-var float  last_H_p  = na;  var int last_H_b = na
-var float  last_L_p  = na;  var int last_L_b = na
+var float  last_H_p  = na
+var int last_H_b = na
+var float  last_L_p  = na
+var int last_L_b = na
 
 // ══════════════════════════════════════════════════════════════════
 //  §5  S I G N A L  S T A T E
@@ -118,8 +124,10 @@ var float  SIG_STOP  = na
 var int    SIG_ARMED = na    // bar_index when armed
 var bool   SIG_CONF  = false // price confirmed beyond entry once
 var int    SIG_SW    = 0     // trend_cnt at arm time (for min_swing gate)
-var float  SIG_R_HH  = na;  var float SIG_R_HL = na
-var float  SIG_R_LH  = na;  var float SIG_R_LL = na
+var float  SIG_R_HH  = na
+var float SIG_R_HL = na
+var float  SIG_R_LH  = na
+var float SIG_R_LL = na
 
 // ══════════════════════════════════════════════════════════════════
 //  §6  T R A D E  S T A T E
@@ -199,52 +207,85 @@ if is_ph
     if is_new_h
         if BIAS == "NEUTRAL"
             if na(HH_p) or ph_p >= HH_p * (1.0 - i_tol)
-                HH_p := ph_p; HH_b := ph_b
+                HH_p := ph_p
+                HH_b := ph_b
                 if not na(HL_p)
                     BIAS      := "UPTREND"
                     trend_cnt := 1
                     [e, s, _] = long_levels(HH_p, HL_p)
-                    SIG_DIR   := "LONG";   SIG_ENTRY := e;    SIG_STOP := s
-                    SIG_ARMED := ph_b;     SIG_CONF  := false; SIG_SW  := trend_cnt
-                    SIG_R_HH  := HH_p;    SIG_R_HL  := HL_p
+                    SIG_DIR   := "LONG"
+                    SIG_ENTRY := e
+                    SIG_STOP := s
+                    SIG_ARMED := ph_b
+                    SIG_CONF  := false
+                    SIG_SW  := trend_cnt
+                    SIG_R_HH  := HH_p
+                    SIG_R_HL  := HL_p
 
         else if BIAS == "UPTREND"
             if ph_p >= HH_p * (1.0 - i_tol)
-                HH_p      := ph_p; HH_b := ph_b
+                HH_p      := ph_p
+                HH_b := ph_b
                 trend_cnt += 1
                 // New HH — re-arm LONG signal from fresh HH/HL
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
+                SIG_DIR := na
+                SIG_ARMED := na
+                SIG_CONF := false
                 if not na(HL_p)
                     [e, s, _] = long_levels(HH_p, HL_p)
-                    SIG_DIR   := "LONG";  SIG_ENTRY := e;    SIG_STOP := s
-                    SIG_ARMED := ph_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                    SIG_R_HH  := HH_p;   SIG_R_HL  := HL_p
+                    SIG_DIR   := "LONG"
+                    SIG_ENTRY := e
+                    SIG_STOP := s
+                    SIG_ARMED := ph_b
+                    SIG_CONF  := false
+                    SIG_SW  := trend_cnt
+                    SIG_R_HH  := HH_p
+                    SIG_R_HL  := HL_p
             else
-                LH_p := ph_p; LH_b := ph_b   // Lower High inside uptrend
+                LH_p := ph_p
+                LH_b := ph_b   // Lower High inside uptrend
 
         else if BIAS == "DOWNTREND"
             if not na(LH_p) and ph_p > LH_p * (1.0 + i_tol)
                 // Swing-based CHoCH: bearish → bullish
                 BIAS      := "UPTREND"
-                HH_p      := ph_p; HH_b := ph_b
-                HL_p      := LL_p; HL_b := LL_b
-                LH_p      := na;   LL_p := na
+                HH_p      := ph_p
+                HH_b := ph_b
+                HL_p      := LL_p
+                HL_b := LL_b
+                LH_p      := na
+                LL_p := na
                 trend_cnt := 1
-                SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
+                SIG_DIR   := na
+                SIG_ARMED := na
+                SIG_CONF := false
                 if not na(HL_p)
                     [e, s, _] = long_levels(HH_p, HL_p)
-                    SIG_DIR   := "LONG";  SIG_ENTRY := e;    SIG_STOP := s
-                    SIG_ARMED := ph_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                    SIG_R_HH  := HH_p;   SIG_R_HL  := HL_p
+                    SIG_DIR   := "LONG"
+                    SIG_ENTRY := e
+                    SIG_STOP := s
+                    SIG_ARMED := ph_b
+                    SIG_CONF  := false
+                    SIG_SW  := trend_cnt
+                    SIG_R_HH  := HH_p
+                    SIG_R_HL  := HL_p
             else
-                LH_p      := ph_p; LH_b := ph_b
+                LH_p      := ph_p
+                LH_b := ph_b
                 trend_cnt += 1
-                SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
+                SIG_DIR   := na
+                SIG_ARMED := na
+                SIG_CONF := false
                 if not na(LL_p)
                     [e, s, _] = short_levels(LH_p, LL_p)
-                    SIG_DIR   := "SHORT"; SIG_ENTRY := e;    SIG_STOP := s
-                    SIG_ARMED := ph_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                    SIG_R_LH  := LH_p;   SIG_R_LL  := LL_p
+                    SIG_DIR   := "SHORT"
+                    SIG_ENTRY := e
+                    SIG_STOP := s
+                    SIG_ARMED := ph_b
+                    SIG_CONF  := false
+                    SIG_SW  := trend_cnt
+                    SIG_R_LH  := LH_p
+                    SIG_R_LL  := LL_p
 
     // Structural line point
     if i_sw_line
@@ -270,52 +311,89 @@ if is_pl
     if is_new_l
         if BIAS == "NEUTRAL"
             if na(HL_p) or pl_p < HL_p
-                HL_p := pl_p; HL_b := pl_b
+                HL_p := pl_p
+                HL_b := pl_b
                 if not na(HH_p) and pl_p < HH_p
                     BIAS      := "DOWNTREND"
-                    LL_p      := pl_p; LL_b := pl_b
-                    LH_p      := HH_p; LH_b := HH_b
+                    LL_p      := pl_p
+                    LL_b := pl_b
+                    LH_p      := HH_p
+                    LH_b := HH_b
                     trend_cnt := 1
-                    SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
+                    SIG_DIR   := na
+                    SIG_ARMED := na
+                    SIG_CONF := false
                     [e, s, _] = short_levels(LH_p, LL_p)
-                    SIG_DIR   := "SHORT"; SIG_ENTRY := e;    SIG_STOP := s
-                    SIG_ARMED := pl_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                    SIG_R_LH  := LH_p;   SIG_R_LL  := LL_p
+                    SIG_DIR   := "SHORT"
+                    SIG_ENTRY := e
+                    SIG_STOP := s
+                    SIG_ARMED := pl_b
+                    SIG_CONF  := false
+                    SIG_SW  := trend_cnt
+                    SIG_R_LH  := LH_p
+                    SIG_R_LL  := LL_p
 
         else if BIAS == "UPTREND"
             if na(HL_p) or pl_p >= HL_p * (1.0 - i_tol)
-                HL_p      := pl_p; HL_b := pl_b
+                HL_p      := pl_p
+                HL_b := pl_b
                 trend_cnt += 1
-                SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
+                SIG_DIR   := na
+                SIG_ARMED := na
+                SIG_CONF := false
                 if not na(HH_p)
                     [e, s, _] = long_levels(HH_p, HL_p)
-                    SIG_DIR   := "LONG";  SIG_ENTRY := e;    SIG_STOP := s
-                    SIG_ARMED := pl_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                    SIG_R_HH  := HH_p;   SIG_R_HL  := HL_p
+                    SIG_DIR   := "LONG"
+                    SIG_ENTRY := e
+                    SIG_STOP := s
+                    SIG_ARMED := pl_b
+                    SIG_CONF  := false
+                    SIG_SW  := trend_cnt
+                    SIG_R_HH  := HH_p
+                    SIG_R_HL  := HL_p
             else
                 // Lower low in uptrend → swing CHoCH
                 BIAS      := "DOWNTREND"
-                LL_p      := pl_p; LL_b := pl_b
-                LH_p      := HH_p; LH_b := HH_b
-                HH_p      := na;   HL_p := na
+                LL_p      := pl_p
+                LL_b := pl_b
+                LH_p      := HH_p
+                LH_b := HH_b
+                HH_p      := na
+                HL_p := na
                 trend_cnt := 1
-                SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
+                SIG_DIR   := na
+                SIG_ARMED := na
+                SIG_CONF := false
                 [e, s, _] = short_levels(LH_p, LL_p)
-                SIG_DIR   := "SHORT"; SIG_ENTRY := e;    SIG_STOP := s
-                SIG_ARMED := pl_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                SIG_R_LH  := LH_p;   SIG_R_LL  := LL_p
+                SIG_DIR   := "SHORT"
+                SIG_ENTRY := e
+                SIG_STOP := s
+                SIG_ARMED := pl_b
+                SIG_CONF  := false
+                SIG_SW  := trend_cnt
+                SIG_R_LH  := LH_p
+                SIG_R_LL  := LL_p
 
         else if BIAS == "DOWNTREND"
             if pl_p <= LL_p * (1.0 + i_tol)
-                LL_p      := pl_p; LL_b := pl_b
+                LL_p      := pl_p
+                LL_b := pl_b
                 trend_cnt += 1
-                SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
+                SIG_DIR   := na
+                SIG_ARMED := na
+                SIG_CONF := false
                 [e, s, _] = short_levels(LH_p, LL_p)
-                SIG_DIR   := "SHORT"; SIG_ENTRY := e;    SIG_STOP := s
-                SIG_ARMED := pl_b;    SIG_CONF  := false; SIG_SW  := trend_cnt
-                SIG_R_LH  := LH_p;   SIG_R_LL  := LL_p
+                SIG_DIR   := "SHORT"
+                SIG_ENTRY := e
+                SIG_STOP := s
+                SIG_ARMED := pl_b
+                SIG_CONF  := false
+                SIG_SW  := trend_cnt
+                SIG_R_LH  := LH_p
+                SIG_R_LL  := LL_p
             else
-                HL_p := pl_p; HL_b := pl_b   // Higher Low inside downtrend
+                HL_p := pl_p
+                HL_b := pl_b   // Higher Low inside downtrend
 
     if i_sw_line
         sw_pts.push(chart.point.from_index(pl_b, pl_p))
@@ -342,26 +420,40 @@ if BIAS == "UPTREND" and not na(HL_p) and close < HL_p * (1.0 - i_tol)
     BIAS      := "DOWNTREND"
     LH_p      := na(HH_p) ? LH_p : HH_p
     LH_b      := na(HH_p) ? LH_b : HH_b
-    LL_p      := na;   LL_b := na
-    HH_p      := na;   HL_p := na
+    LL_p      := na
+    LL_b := na
+    HH_p      := na
+    HL_p := na
     trend_cnt := 1
-    SIG_DIR   := na;   SIG_ARMED := na; SIG_CONF := false
+    SIG_DIR   := na
+    SIG_ARMED := na
+    SIG_CONF := false
     // Cannot arm SHORT yet: no confirmed LL from CHoCH close
 
 else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
     choch_up  := true
     BIAS      := "UPTREND"
     // Approximate HH as the candle high, HL as the previous LL
-    HH_p      := high; HH_b := bar_index
-    HL_p      := LL_p; HL_b := LL_b
-    LH_p      := na;   LL_p := na
+    HH_p      := high
+    HH_b := bar_index
+    HL_p      := LL_p
+    HL_b := LL_b
+    LH_p      := na
+    LL_p := na
     trend_cnt := 1
-    SIG_DIR   := na;   SIG_ARMED := na; SIG_CONF := false
+    SIG_DIR   := na
+    SIG_ARMED := na
+    SIG_CONF := false
     if not na(HL_p) and HH_p > HL_p
         [e, s, _] = long_levels(HH_p, HL_p)
-        SIG_DIR   := "LONG";  SIG_ENTRY := e;    SIG_STOP := s
-        SIG_ARMED := bar_index; SIG_CONF := false; SIG_SW := trend_cnt
-        SIG_R_HH  := HH_p;   SIG_R_HL := HL_p
+        SIG_DIR   := "LONG"
+        SIG_ENTRY := e
+        SIG_STOP := s
+        SIG_ARMED := bar_index
+        SIG_CONF := false
+        SIG_SW := trend_cnt
+        SIG_R_HH  := HH_p
+        SIG_R_HL := HL_p
 
 // ══════════════════════════════════════════════════════════════════
 //  §11  SIGNAL  MANAGEMENT
@@ -369,8 +461,12 @@ else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
 
 // Expiry gate
 if not na(SIG_DIR) and not na(SIG_ARMED) and (bar_index - SIG_ARMED) > v_expiry
-    SIG_DIR   := na; SIG_ENTRY := na; SIG_STOP := na
-    SIG_ARMED := na; SIG_CONF  := false; SIG_SW := 0
+    SIG_DIR   := na
+    SIG_ENTRY := na
+    SIG_STOP := na
+    SIG_ARMED := na
+    SIG_CONF  := false
+    SIG_SW := 0
 
 // Confirmation tracking (price must trade beyond entry once before fill)
 if not na(SIG_DIR) and not IN_TRADE
@@ -408,12 +504,19 @@ if entry_long or entry_short
     TR_BAR     := bar_index
     ST_TOTAL   += 1
     // Clear signal
-    SIG_DIR    := na; SIG_ENTRY := na; SIG_STOP := na
-    SIG_ARMED  := na; SIG_CONF  := false; SIG_SW := 0
+    SIG_DIR    := na
+    SIG_ENTRY := na
+    SIG_STOP := na
+    SIG_ARMED  := na
+    SIG_CONF  := false
+    SIG_SW := 0
 
     // Draw level lines
     if i_entry_v
-        line.delete(L_ENTRY); line.delete(L_SL); line.delete(L_TP); box.delete(B_ENTRY)
+        line.delete(L_ENTRY)
+        line.delete(L_SL)
+        line.delete(L_TP)
+        box.delete(B_ENTRY)
         L_ENTRY := line.new(bar_index, TR_ENTRY, bar_index+1, TR_ENTRY,
                             extend=extend.right, color=color.new(color.white, 40),
                             width=1, style=line.style_dashed)
@@ -440,7 +543,9 @@ if v_early and IN_TRADE and bar_index == TR_BAR + 1
                       "✗ early\n" + str.tostring(_pnl, "#.##") + "%",
                       color=color.new(color.red, 8), textcolor=color.white,
                       style=label.style_label_up, size=size.small)
-        line.delete(L_ENTRY); line.delete(L_SL); line.delete(L_TP)
+        line.delete(L_ENTRY)
+        line.delete(L_SL)
+        line.delete(L_TP)
 
 // ══════════════════════════════════════════════════════════════════
 //  §15  STOP  LOSS  HIT
@@ -461,7 +566,9 @@ if IN_TRADE
                       color=color.new(color.red, 8), textcolor=color.white,
                       style=TR_DIR=="LONG" ? label.style_label_up : label.style_label_down,
                       size=size.small)
-        line.delete(L_ENTRY); line.delete(L_SL); line.delete(L_TP)
+        line.delete(L_ENTRY)
+        line.delete(L_SL)
+        line.delete(L_TP)
 
 // ══════════════════════════════════════════════════════════════════
 //  §16  TAKE  PROFIT  HIT
@@ -482,7 +589,9 @@ if IN_TRADE
                       color=color.new(color.teal, 8), textcolor=color.white,
                       style=TR_DIR=="LONG" ? label.style_label_down : label.style_label_up,
                       size=size.small)
-        line.delete(L_ENTRY); line.delete(L_SL); line.delete(L_TP)
+        line.delete(L_ENTRY)
+        line.delete(L_SL)
+        line.delete(L_TP)
 
 // ══════════════════════════════════════════════════════════════════
 //  §17  V I S U A L S

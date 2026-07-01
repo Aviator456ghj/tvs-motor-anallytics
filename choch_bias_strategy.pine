@@ -138,13 +138,19 @@ pivot_bar = bar_index[i_swing_n]
 // ══════════════════════════════════════════════════════════════════
 var string BIAS      = "NEUTRAL"
 var int    trend_cnt = 0
-var float  HH_p = na;  var int HH_b = na
-var float  HL_p = na;  var int HL_b = na
-var float  LH_p = na;  var int LH_b = na
-var float  LL_p = na;  var int LL_b = na
+var float  HH_p = na
+var int HH_b = na
+var float  HL_p = na
+var int HL_b = na
+var float  LH_p = na
+var int LH_b = na
+var float  LL_p = na
+var int LL_b = na
 var string last_type = "NONE"
-var float  last_H_p  = na;  var int last_H_b = na
-var float  last_L_p  = na;  var int last_L_b = na
+var float  last_H_p  = na
+var int last_H_b = na
+var float  last_L_p  = na
+var int last_L_b = na
 
 // ══════════════════════════════════════════════════════════════════
 //  §5  FIB STATE
@@ -202,9 +208,14 @@ _clear_fib_drawings() =>
 
 _clear_signal() =>
     SIG_DIR   := na
-    SIG_ENTRY := na;  SIG_STOP := na
-    SIG_TP1   := na;  SIG_TP2  := na;  SIG_TP3 := na
-    SIG_ARMED := na;  SIG_CONF := false;  SIG_SW := 0
+    SIG_ENTRY := na
+    SIG_STOP := na
+    SIG_TP1   := na
+    SIG_TP2  := na
+    SIG_TP3 := na
+    SIG_ARMED := na
+    SIG_CONF := false
+    SIG_SW := 0
     box.delete(SIG_BOX)
     line.delete(SIG_LINE)
 
@@ -266,10 +277,18 @@ _arm_long_fib(float lh, float ll, int sw) =>
         tp1    = entry + 1.618 * rng
         tp2    = entry + 2.272 * rng
         tp3    = entry + 2.618 * rng
-        FIB_HIGH  := lh;  FIB_LOW  := ll;  FIB_SIDE := 1
-        SIG_DIR   := "LONG";  SIG_ENTRY := entry;  SIG_STOP := stop
-        SIG_TP1   := tp1;  SIG_TP2 := tp2;  SIG_TP3 := tp3
-        SIG_ARMED := bar_index;  SIG_CONF := false;  SIG_SW := sw
+        FIB_HIGH  := lh
+        FIB_LOW  := ll
+        FIB_SIDE := 1
+        SIG_DIR   := "LONG"
+        SIG_ENTRY := entry
+        SIG_STOP := stop
+        SIG_TP1   := tp1
+        SIG_TP2 := tp2
+        SIG_TP3 := tp3
+        SIG_ARMED := bar_index
+        SIG_CONF := false
+        SIG_SW := sw
         _clear_fib_drawings()
         _draw_fib(lh, ll, 1, entry, tp1, tp2, tp3)
 
@@ -283,10 +302,18 @@ _arm_short_fib(float hh, float hl, int sw) =>
         tp1    = entry - 1.618 * rng
         tp2    = entry - 2.272 * rng
         tp3    = entry - 2.618 * rng
-        FIB_HIGH  := hh;  FIB_LOW  := hl;  FIB_SIDE := -1
-        SIG_DIR   := "SHORT";  SIG_ENTRY := entry;  SIG_STOP := stop
-        SIG_TP1   := tp1;  SIG_TP2 := tp2;  SIG_TP3 := tp3
-        SIG_ARMED := bar_index;  SIG_CONF := false;  SIG_SW := sw
+        FIB_HIGH  := hh
+        FIB_LOW  := hl
+        FIB_SIDE := -1
+        SIG_DIR   := "SHORT"
+        SIG_ENTRY := entry
+        SIG_STOP := stop
+        SIG_TP1   := tp1
+        SIG_TP2 := tp2
+        SIG_TP3 := tp3
+        SIG_ARMED := bar_index
+        SIG_CONF := false
+        SIG_SW := sw
         _clear_fib_drawings()
         _draw_fib(hh, hl, -1, entry, tp1, tp2, tp3)
 
@@ -310,7 +337,9 @@ if i_cascade and TP1_HIT and not IN_TRADE and not na(TR_ENTRY_PX) and not na(TR_
     else if TR_DIR == "SHORT" and TR_TP1_PX < TR_ENTRY_PX
         _arm_short_fib(TR_ENTRY_PX, TR_TP1_PX, 1)
     TP1_HIT     := false
-    TR_ENTRY_PX := na;  TR_TP1_PX := na;  TR_TP3_PX := na
+    TR_ENTRY_PX := na
+    TR_TP1_PX := na
+    TR_TP3_PX := na
 
 // ══════════════════════════════════════════════════════════════════
 //  §12  PROCESS PIVOT HIGH
@@ -321,34 +350,48 @@ if is_ph
     is_new_h = last_type != "H"
     if last_type == "H"
         if ph_p > last_H_p
-            last_H_p := ph_p;  last_H_b := ph_b
+            last_H_p := ph_p
+            last_H_b := ph_b
     else
-        last_H_p := ph_p;  last_H_b := ph_b;  last_type := "H"
+        last_H_p := ph_p
+        last_H_b := ph_b
+        last_type := "H"
 
     if is_new_h
         if BIAS == "NEUTRAL"
             if na(HH_p) or ph_p >= HH_p * (1.0 - i_tol)
-                HH_p := ph_p;  HH_b := ph_b
+                HH_p := ph_p
+                HH_b := ph_b
                 if not na(HL_p)
-                    BIAS := "UPTREND";  trend_cnt := 1
+                    BIAS := "UPTREND"
+                    trend_cnt := 1
 
         else if BIAS == "UPTREND"
             if ph_p >= HH_p * (1.0 - i_tol)
-                HH_p := ph_p;  HH_b := ph_b;  trend_cnt += 1
+                HH_p := ph_p
+                HH_b := ph_b
+                trend_cnt += 1
                 _clear_signal()
             else
-                LH_p := ph_p;  LH_b := ph_b
+                LH_p := ph_p
+                LH_b := ph_b
 
         else if BIAS == "DOWNTREND"
             if not na(LH_p) and ph_p > LH_p * (1.0 + i_tol)
                 if not IN_TRADE and not na(LL_p)
                     _arm_long_fib(ph_p, LL_p, trend_cnt)
-                BIAS := "UPTREND";  trend_cnt := 1
-                HH_p := ph_p;  HH_b := ph_b
-                HL_p := LL_p;  HL_b := LL_b
-                LH_p := na;    LL_p := na
+                BIAS := "UPTREND"
+                trend_cnt := 1
+                HH_p := ph_p
+                HH_b := ph_b
+                HL_p := LL_p
+                HL_b := LL_b
+                LH_p := na
+                LL_p := na
             else
-                LH_p := ph_p;  LH_b := ph_b;  trend_cnt += 1
+                LH_p := ph_p
+                LH_b := ph_b
+                trend_cnt += 1
                 _clear_signal()
                 if not IN_TRADE and not na(LL_p)
                     _arm_short_fib(LH_p, LL_p, trend_cnt)
@@ -365,41 +408,57 @@ if is_pl
     is_new_l = last_type != "L"
     if last_type == "L"
         if pl_p < last_L_p
-            last_L_p := pl_p;  last_L_b := pl_b
+            last_L_p := pl_p
+            last_L_b := pl_b
     else
-        last_L_p := pl_p;  last_L_b := pl_b;  last_type := "L"
+        last_L_p := pl_p
+        last_L_b := pl_b
+        last_type := "L"
 
     if is_new_l
         if BIAS == "NEUTRAL"
             if na(HL_p) or pl_p < HL_p
-                HL_p := pl_p;  HL_b := pl_b
+                HL_p := pl_p
+                HL_b := pl_b
                 if not na(HH_p) and pl_p < HH_p
-                    BIAS := "DOWNTREND";  trend_cnt := 1
-                    LL_p := pl_p;  LL_b := pl_b
-                    LH_p := HH_p;  LH_b := HH_b
+                    BIAS := "DOWNTREND"
+                    trend_cnt := 1
+                    LL_p := pl_p
+                    LL_b := pl_b
+                    LH_p := HH_p
+                    LH_b := HH_b
 
         else if BIAS == "UPTREND"
             if na(HL_p) or pl_p >= HL_p * (1.0 - i_tol)
-                HL_p := pl_p;  HL_b := pl_b;  trend_cnt += 1
+                HL_p := pl_p
+                HL_b := pl_b
+                trend_cnt += 1
                 _clear_signal()
                 if not IN_TRADE and not na(HH_p)
                     _arm_long_fib(HH_p, HL_p, trend_cnt)
             else
                 if not IN_TRADE and not na(HH_p)
                     _arm_short_fib(HH_p, pl_p, trend_cnt)
-                BIAS := "DOWNTREND";  trend_cnt := 1
-                LL_p := pl_p;  LL_b := pl_b
-                LH_p := HH_p;  LH_b := HH_b
-                HH_p := na;    HL_p := na
+                BIAS := "DOWNTREND"
+                trend_cnt := 1
+                LL_p := pl_p
+                LL_b := pl_b
+                LH_p := HH_p
+                LH_b := HH_b
+                HH_p := na
+                HL_p := na
 
         else if BIAS == "DOWNTREND"
             if pl_p <= LL_p * (1.0 + i_tol)
-                LL_p := pl_p;  LL_b := pl_b;  trend_cnt += 1
+                LL_p := pl_p
+                LL_b := pl_b
+                trend_cnt += 1
                 _clear_signal()
                 if not IN_TRADE
                     _arm_short_fib(LH_p, LL_p, trend_cnt)
             else
-                HL_p := pl_p;  HL_b := pl_b
+                HL_p := pl_p
+                HL_b := pl_b
 
     if i_sw_line
         sw_pts.push(chart.point.from_index(pl_b, pl_p))
@@ -424,20 +483,27 @@ if BIAS == "UPTREND" and not na(HL_p) and close < HL_p * (1.0 - i_tol)
     choch_dn := true
     if not IN_TRADE and not na(HH_p)
         _arm_short_fib(HH_p, HL_p, trend_cnt)
-    BIAS := "DOWNTREND";  trend_cnt := 1
+    BIAS := "DOWNTREND"
+    trend_cnt := 1
     LH_p := na(HH_p) ? LH_p : HH_p
     LH_b := na(HH_p) ? LH_b : HH_b
-    LL_p := na;  LL_b := na
-    HH_p := na;  HL_p := na
+    LL_p := na
+    LL_b := na
+    HH_p := na
+    HL_p := na
 
 else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
     choch_up := true
     if not IN_TRADE and not na(LL_p)
         _arm_long_fib(LH_p, LL_p, trend_cnt)
-    BIAS := "UPTREND";  trend_cnt := 1
-    HH_p := LH_p;  HH_b := LH_b
-    HL_p := LL_p;  HL_b := LL_b
-    LH_p := na;    LL_p := na
+    BIAS := "UPTREND"
+    trend_cnt := 1
+    HH_p := LH_p
+    HH_b := LH_b
+    HL_p := LL_p
+    HL_b := LL_b
+    LH_p := na
+    LL_p := na
 
 // ══════════════════════════════════════════════════════════════════
 //  §15  SIGNAL MANAGEMENT
@@ -447,7 +513,8 @@ else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
 if not na(SIG_DIR) and not na(SIG_ARMED) and (bar_index - SIG_ARMED) > v_expiry
     _clear_signal()
     _clear_fib_drawings()
-    FIB_HIGH := na;  FIB_LOW := na   // FIX 3: reset stale anchors
+    FIB_HIGH := na
+    FIB_LOW := na   // FIX 3: reset stale anchors
 
 // FIX 2 – false CHoCH invalidation
 // If price closes BEYOND the fib anchor in the direction that invalidates the setup,
@@ -503,7 +570,8 @@ if entry_long
     BE_MOVED    := false
     TP1_HIT     := false
     IN_TRADE    := true
-    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate; avoids same-bar TP1 race
+    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate
+    avoids same-bar TP1 race
     strategy.entry("Long", strategy.long, comment="▲ CHoCH " + str.tostring(i_fib_entry))
     strategy.exit("Long TP1", from_entry="Long",
                   qty_percent=34,  limit=SIG_TP1, comment_profit="✔ TP1 1.618")
@@ -523,7 +591,8 @@ if entry_short
     BE_MOVED    := false
     TP1_HIT     := false
     IN_TRADE    := true
-    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate; avoids same-bar TP1 race
+    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate
+    avoids same-bar TP1 race
     strategy.entry("Short", strategy.short, comment="▼ CHoCH " + str.tostring(i_fib_entry))
     strategy.exit("Short TP1", from_entry="Short",
                   qty_percent=34,  limit=SIG_TP1, comment_profit="✔ TP1 1.618")
@@ -579,13 +648,17 @@ if choch_dn and strategy.position_size > 0
     strategy.close_all(comment="CHoCH ↓ Flip")
     IN_TRADE    := false
     TP1_HIT     := false
-    TR_ENTRY_PX := na;  TR_TP1_PX := na;  TR_TP3_PX := na
+    TR_ENTRY_PX := na
+    TR_TP1_PX := na
+    TR_TP3_PX := na
 
 if choch_up and strategy.position_size < 0
     strategy.close_all(comment="CHoCH ↑ Flip")
     IN_TRADE    := false
     TP1_HIT     := false
-    TR_ENTRY_PX := na;  TR_TP1_PX := na;  TR_TP3_PX := na
+    TR_ENTRY_PX := na
+    TR_TP1_PX := na
+    TR_TP3_PX := na
 
 // ══════════════════════════════════════════════════════════════════
 //  §20  VISUALS
