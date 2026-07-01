@@ -185,6 +185,7 @@ var polyline           sw_poly   = na
 var table              DASH      = na
 var box                SIG_BOX   = na
 var line               SIG_LINE  = na
+var float              SIG_BOX_ENTRY = na   // tracks last drawn entry to avoid per-bar rebuild
 var array<box>         FIB_BOXES = array.new<box>()
 var array<line>        FIB_LINES = array.new<line>()
 
@@ -315,7 +316,7 @@ if i_cascade and TP1_HIT and not IN_TRADE and not na(TR_ENTRY_PX) and not na(TR_
             SIG_DIR   := "LONG";  SIG_ENTRY := _ce;  SIG_STOP := _cs
             SIG_TP1   := _ce + 1.618*_crng;  SIG_TP2 := _ce + 2.272*_crng
             SIG_TP3   := _ce + 2.618*_crng
-            SIG_ARMED := bar_index;  SIG_CONF := close >= _ce;  SIG_SW := 1
+            SIG_ARMED := bar_index;  SIG_CONF := false;  SIG_SW := 1
             _clear_fib_drawings()
             _draw_fib(TR_TP1_PX, TR_ENTRY_PX, 1, _ce, SIG_TP1, SIG_TP2, SIG_TP3)
         else if TR_DIR == "SHORT" and TR_TP1_PX < TR_ENTRY_PX
@@ -327,7 +328,7 @@ if i_cascade and TP1_HIT and not IN_TRADE and not na(TR_ENTRY_PX) and not na(TR_
             SIG_DIR   := "SHORT";  SIG_ENTRY := _ce;  SIG_STOP := _cs
             SIG_TP1   := _ce - 1.618*_crng;  SIG_TP2 := _ce - 2.272*_crng
             SIG_TP3   := _ce - 2.618*_crng
-            SIG_ARMED := bar_index;  SIG_CONF := close <= _ce;  SIG_SW := 1
+            SIG_ARMED := bar_index;  SIG_CONF := false;  SIG_SW := 1
             _clear_fib_drawings()
             _draw_fib(TR_ENTRY_PX, TR_TP1_PX, -1, _ce, SIG_TP1, SIG_TP2, SIG_TP3)
     // Reset cascade state regardless of whether range was valid
@@ -500,8 +501,8 @@ rsi_chk = SIG_DIR == "LONG" ? RSI > 50 : RSI < 50
 rsi_ok  = v_rsi_side ? rsi_chk : true
 // FIX 7 – HTF trend must agree with trade direction
 htf_ok  = SIG_DIR == "LONG" ? htf_bull : htf_bear
-filt_ok = adx_ok and SIG_CONF and SIG_SW >= v_min_sw and rsi_ok and htf_ok
-          and not IN_TRADE and not na(SIG_DIR)
+filt_ok = (adx_ok and SIG_CONF and SIG_SW >= v_min_sw and rsi_ok and htf_ok
+           and not IN_TRADE and not na(SIG_DIR))
 
 entry_long  = filt_ok and SIG_DIR == "LONG"  and low  <= SIG_ENTRY
 entry_short = filt_ok and SIG_DIR == "SHORT" and high >= SIG_ENTRY
@@ -639,34 +640,37 @@ if i_choch_v and choch_up
               color=color.new(color.teal,5), textcolor=color.white,
               style=label.style_label_up, size=size.normal)
 
-// Live signal zone box + dotted entry line
+// Live signal zone box + dotted entry line — only rebuild when signal changes
 if not na(SIG_DIR) and not IN_TRADE
-    box.delete(SIG_BOX)
-    line.delete(SIG_LINE)
-    _zone = ATR * 0.15
-    _is_l = SIG_DIR == "LONG"
-    _bhi  = _is_l ? SIG_ENTRY + _zone : SIG_ENTRY
-    _blo  = _is_l ? SIG_ENTRY          : SIG_ENTRY - _zone
-    _bc   = _is_l ? color.new(color.teal,78) : color.new(color.red,78)
-    _brd  = _is_l ? color.new(color.teal,30) : color.new(color.red,30)
-    SIG_BOX  := box.new(bar_index, _bhi, bar_index + v_expiry, _blo,
-                        bgcolor=_bc, border_color=_brd, border_width=1)
-    _sc      = SIG_DIR == "LONG" ? color.new(color.teal,20) : color.new(color.red,20)
-    SIG_LINE := line.new(bar_index, SIG_ENTRY, bar_index + 1, SIG_ENTRY,
-                         extend=extend.right, color=_sc, width=2, style=line.style_dotted)
+    if SIG_ENTRY != SIG_BOX_ENTRY
+        box.delete(SIG_BOX)
+        line.delete(SIG_LINE)
+        _zone = ATR * 0.15
+        _is_l = SIG_DIR == "LONG"
+        _bhi  = _is_l ? SIG_ENTRY + _zone : SIG_ENTRY
+        _blo  = _is_l ? SIG_ENTRY          : SIG_ENTRY - _zone
+        _bc   = _is_l ? color.new(color.teal,78) : color.new(color.red,78)
+        _brd  = _is_l ? color.new(color.teal,30) : color.new(color.red,30)
+        SIG_BOX  := box.new(bar_index, _bhi, bar_index + v_expiry, _blo,
+                            bgcolor=_bc, border_color=_brd, border_width=1)
+        _sc      = SIG_DIR == "LONG" ? color.new(color.teal,20) : color.new(color.red,20)
+        SIG_LINE := line.new(bar_index, SIG_ENTRY, bar_index + 1, SIG_ENTRY,
+                             extend=extend.right, color=_sc, width=2, style=line.style_dotted)
+        SIG_BOX_ENTRY := SIG_ENTRY
 else
     box.delete(SIG_BOX)
     line.delete(SIG_LINE)
+    SIG_BOX_ENTRY := na
 
-// Breakeven level indicator while trade is open and BE is active
+// Breakeven level indicator — create once when BE first activates, delete on trade close
 var line BE_LINE = na
-if IN_TRADE and BE_MOVED and not na(TR_ENTRY_PX)
-    line.delete(BE_LINE)
+if IN_TRADE and BE_MOVED and not na(TR_ENTRY_PX) and na(BE_LINE)
     BE_LINE := line.new(bar_index, TR_ENTRY_PX, bar_index + 1, TR_ENTRY_PX,
                         extend=extend.right,
                         color=color.new(color.yellow,20), width=1, style=line.style_dashed)
-else if not IN_TRADE
+else if not IN_TRADE and not na(BE_LINE)
     line.delete(BE_LINE)
+    BE_LINE := na
 
 if i_bar_col and IN_TRADE
     barcolor(TR_DIR == "LONG" ? color.new(color.teal,45) : color.new(color.red,45))
