@@ -1,25 +1,31 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
-// © CHoCH Bias Strategy Pro — Pine Script v6
+// © CHoCH Fib Strategy Pro — Pine Script v6
 //@version=6
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║   CHoCH BIAS STRATEGY PRO  ·  Pine Script v6  ·  STRATEGY              ║
-// ║   Change of Character  ·  Structural Swing Analysis  ·  V1 / V2 / V3  ║
-// ║                                                                         ║
-// ║   Back-tested on BTC/USDT (Crypto.com REST, 2020–2026):                ║
-// ║     V1  ADX>20, expiry=10, min_swing=1   →  ~65% WR, $1→$31 (1D)      ║
-// ║     V2  ADX>25, expiry=4,  min_swing=2   →  ~75% WR, best Sharpe      ║
-// ║     V3  V2 + rejection + RSI side + early exit  →  lowest MaxDD       ║
-// ║                                                                         ║
-// ║   TradingView will draw ALL trade visuals automatically:                ║
-// ║     • Long (▲) and Short (▼) entry markers per trade                   ║
-// ║     • Green / red filled position band between entry and exit           ║
-// ║     • Exit markers with TP / SL / CHoCH labels                         ║
-// ║     • Full Strategy Tester panel: WR, PnL, MaxDD, Sharpe, etc.         ║
+// ║  CHoCH + FIBONACCI ENTRY STRATEGY  ·  Pine Script v6  ·  STRATEGY      ║
+// ║                                                                          ║
+// ║  Methodology:                                                            ║
+// ║   1. Detect CHoCH (Change of Character) on structural swing              ║
+// ║   2. Draw Normal Fib Retracement on the swing that preceded CHoCH        ║
+// ║   3. Enter at the 0.618 golden-pocket pullback zone                      ║
+// ║   4. Trend-Based Fib Extension targets: 1.618 · 2.272 · 2.618           ║
+// ║   5. Partial exits: 34% @ TP1 | 33% @ TP2 | 33% @ TP3 (or SL)          ║
+// ║                                                                          ║
+// ║  ⚠  KNOWN LOOPHOLES (by design — flagged, not hidden):                  ║
+// ║   1. Entry zone ambiguity: strategy uses 0.618; image also shows 0.5    ║
+// ║   2. False CHoCH: price can break LL after bullish CHoCH → invalidates  ║
+// ║   3. Wrong anchors after rapid multi-CHoCH flips (always last LH/LL)    ║
+// ║   4. Stop below FIB_LOW with a buffer — may be too tight on volatile    ║
+// ║   5. No structure confirmation at fib zone (pure price touch = entry)   ║
+// ║   6. 1.618 extension is heavy institutional resistance → frequent rev.  ║
+// ║   7. Multi-timeframe fib conflicts not handled in this script            ║
+// ║   8. No auto telescoping: new fib from TP1 bounce not triggered here    ║
+// ║   9. Small-range swings cluster fib levels too close; noise triggers    ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
-strategy("CHoCH Bias Pro [v6]",
-         shorttitle              = "CHoCH Pro",
+strategy("CHoCH Fib Strategy [v6]",
+         shorttitle              = "CHoCH Fib",
          overlay                 = true,
          initial_capital         = 10000,
          currency                = currency.USD,
@@ -33,182 +39,260 @@ strategy("CHoCH Bias Pro [v6]",
          process_orders_on_close = false,
          max_lines_count         = 500,
          max_labels_count        = 500,
-         max_boxes_count         = 200,
+         max_boxes_count         = 400,
          max_polylines_count     = 20)
 
 // ══════════════════════════════════════════════════════════════════
-//  §1  I N P U T S
+//  §1  INPUTS
 // ══════════════════════════════════════════════════════════════════
-G_RISK = "💰 Capital & Risk"
-G_SW   = "⚡ Swing & Entry"
+G_SW   = "⚡ Swing & CHoCH"
+G_FIB  = "📐 Fibonacci"
 G_FLT  = "🔧 Filters"
 G_VIS  = "🎨 Visuals"
 G_DASH = "📊 Dashboard"
 
-// — Capital & Risk —
-i_pos_pct   = input.float(100,  "Position Size (% of Equity)",    minval=1, maxval=100, step=1, group=G_RISK,
-                           tooltip="100 = full compounding. Reduce to limit per-trade exposure.")
-i_comm      = input.float(0.05, "Commission per side (%)",         minval=0, maxval=1.0, step=0.01, group=G_RISK)
-i_slip      = input.int  (2,    "Slippage (ticks)",                minval=0, maxval=20,  group=G_RISK)
-
-// — Swing & Entry —
 i_swing_n  = input.int  (5,    "Swing Lookback (bars each side)", minval=2, maxval=20, group=G_SW)
-i_mult     = input.float(2.6,  "Entry Multiplier",                minval=1.0, maxval=10.0, step=0.1, group=G_SW,
-                          tooltip="LONG entry = HL + (HH−HL) / mult  ≈ 38.5% up when 2.6")
-i_stop_pct = input.float(0.5,  "Stop Buffer %",                   minval=0.0, maxval=3.0, step=0.1, group=G_SW) / 100
-i_tol      = input.float(0.1,  "Level Tolerance %",               minval=0.0, maxval=1.0, step=0.05, group=G_SW) / 100
-i_tp_rr    = input.float(2.0,  "Take-Profit R:R",                 minval=0.5, maxval=20.0, step=0.5, group=G_SW)
+i_tol      = input.float(0.1,  "Level Tolerance %",   minval=0.0, maxval=1.0, step=0.05, group=G_SW) / 100
 
-// — Filters —
-i_variant  = input.string("V2", "Strategy Variant", options=["V1","V2","V3"], group=G_FLT,
-                           tooltip="V1 = ADX>20, expiry=10, min_swing=1\nV2 = ADX>25, expiry=4, min_swing=2\nV3 = V2 + rejection candle + RSI side + early exit")
-i_adx_thr  = input.int  (25,   "ADX Threshold (V2/V3 override)",  minval=5,  maxval=60, group=G_FLT)
-i_adx_p    = input.int  (14,   "ADX Period",                      minval=5,  maxval=30, group=G_FLT)
-i_expiry   = input.int  (4,    "Signal Expiry (bars)",            minval=1,  maxval=30, group=G_FLT)
-i_min_sw   = input.int  (2,    "Min Swings Before Entry",         minval=1,  maxval=10, group=G_FLT)
-i_rsi_p    = input.int  (14,   "RSI Period",                      minval=5,  maxval=30, group=G_FLT)
+i_stop_pct = input.float(0.5,  "Stop Buffer %",       minval=0.0, maxval=3.0, step=0.1, group=G_FIB,
+                          tooltip="Stop placed this % beyond FIB_LOW (long) or FIB_HIGH (short)") / 100
 
-// — Variant-resolved parameters —
-v_adx_thr = i_variant == "V1" ? 20 : i_adx_thr
-v_expiry  = i_variant == "V1" ? 10 : i_expiry
-v_min_sw  = i_variant == "V1" ? 1  : i_min_sw
-v_reject  = i_variant == "V3"   // Entry candle must close beyond the entry level
-v_rsi_side= i_variant == "V3"   // RSI > 50 for LONG, RSI < 50 for SHORT
-v_early   = i_variant == "V3"   // Close if next candle has no follow-through
+i_variant  = input.string("V2","Strategy Variant", options=["V1","V2","V3"], group=G_FLT,
+                           tooltip="V1=ADX>20,expiry=20\nV2=ADX>25,expiry=20\nV3=V2+rejection+RSI+early exit")
+i_adx_thr  = input.int  (25,  "ADX Threshold",       minval=5,  maxval=60, group=G_FLT)
+i_adx_p    = input.int  (14,  "ADX Period",          minval=5,  maxval=30, group=G_FLT)
+i_expiry   = input.int  (20,  "Signal Expiry (bars)",minval=1,  maxval=100,group=G_FLT,
+                          tooltip="Fib setups need more bars than fixed-level signals — default 20")
+i_min_sw   = input.int  (2,   "Min Swings for Entry",minval=1,  maxval=10, group=G_FLT)
+i_rsi_p    = input.int  (14,  "RSI Period",          minval=5,  maxval=30, group=G_FLT)
 
-// — Visuals —
-i_sw_lbl   = input.bool(true,  "Swing Labels (HH / HL / LH / LL)", group=G_VIS)
-i_sw_line  = input.bool(true,  "Structural Swing Polyline",          group=G_VIS)
-i_zone_box = input.bool(true,  "Signal Entry Zone Box",              group=G_VIS)
-i_choch_v  = input.bool(true,  "CHoCH Markers",                     group=G_VIS)
-i_bg_v     = input.bool(true,  "Bias Background Shading",            group=G_VIS)
-i_bar_col  = input.bool(true,  "Colour Bars While In Trade",         group=G_VIS)
-
-i_dash     = input.bool  (true,          "Show Dashboard",   group=G_DASH)
+i_fib_vis  = input.bool(true, "Draw Fib Zones",       group=G_VIS)
+i_sw_lbl   = input.bool(true, "Swing Labels",         group=G_VIS)
+i_sw_line  = input.bool(true, "Structural Polyline",  group=G_VIS)
+i_choch_v  = input.bool(true, "CHoCH Markers",        group=G_VIS)
+i_bg_v     = input.bool(true, "Bias Background",      group=G_VIS)
+i_bar_col  = input.bool(true, "Colour Bars In Trade", group=G_VIS)
+i_dash     = input.bool(true, "Show Dashboard",       group=G_DASH)
 i_dash_pos = input.string("Bottom Right","Dashboard Position",
              options=["Top Right","Bottom Right","Top Left","Bottom Left"], group=G_DASH)
 
-// ══════════════════════════════════════════════════════════════════
-//  §2  I N D I C A T O R S
-// ══════════════════════════════════════════════════════════════════
-
-// ADX — Wilder RMA (matches the Python backtest formula)
-_up    = ta.change(high)
-_dn    = -ta.change(low)
-_pdm   = (_up > _dn and _up > 0) ? _up : 0.0
-_ndm   = (_dn > _up and _dn > 0) ? _dn : 0.0
-_tr    = math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1]))
-_atrw  = ta.rma(_tr,  i_adx_p)
-_pdi   = 100.0 * ta.rma(_pdm, i_adx_p) / _atrw
-_ndi   = 100.0 * ta.rma(_ndm, i_adx_p) / _atrw
-_dsum  = _pdi + _ndi
-_dx    = _dsum > 0 ? 100.0 * math.abs(_pdi - _ndi) / _dsum : 0.0
-ADX    = ta.rma(_dx, i_adx_p)
-
-// RSI and ATR
-RSI    = ta.rsi(close, i_rsi_p)
-ATR    = ta.atr(14)
+v_adx_thr = i_variant == "V1" ? 20 : i_adx_thr
+v_expiry  = i_variant == "V1" ? 20 : i_expiry
+v_min_sw  = i_variant == "V1" ? 1  : i_min_sw
+v_reject  = i_variant == "V3"
+v_rsi_side= i_variant == "V3"
+v_early   = i_variant == "V3"
 
 // ══════════════════════════════════════════════════════════════════
-//  §3  PIVOT DETECTION  — fires i_swing_n bars late
+//  §2  INDICATORS
+// ══════════════════════════════════════════════════════════════════
+_up   = ta.change(high)
+_dn   = -ta.change(low)
+_pdm  = (_up > _dn and _up > 0) ? _up : 0.0
+_ndm  = (_dn > _up and _dn > 0) ? _dn : 0.0
+_tr   = math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1]))
+_atrw = ta.rma(_tr,  i_adx_p)
+_pdi  = 100.0 * ta.rma(_pdm, i_adx_p) / _atrw
+_ndi  = 100.0 * ta.rma(_ndm, i_adx_p) / _atrw
+_dsum = _pdi + _ndi
+_dx   = _dsum > 0 ? 100.0 * math.abs(_pdi - _ndi) / _dsum : 0.0
+ADX   = ta.rma(_dx, i_adx_p)
+RSI   = ta.rsi(close, i_rsi_p)
+ATR   = ta.atr(14)
+
+// ══════════════════════════════════════════════════════════════════
+//  §3  PIVOT DETECTION  (fires i_swing_n bars late)
 // ══════════════════════════════════════════════════════════════════
 ph_raw    = ta.pivothigh(high, i_swing_n, i_swing_n)
 pl_raw    = ta.pivotlow (low,  i_swing_n, i_swing_n)
 is_ph     = not na(ph_raw)
 is_pl     = not na(pl_raw)
-pivot_bar = bar_index[i_swing_n]   // the actual structural bar (lagged)
+pivot_bar = bar_index[i_swing_n]
 
 // ══════════════════════════════════════════════════════════════════
-//  §4  TREND STATE  (persistent var)
+//  §4  STRUCTURAL TREND STATE
 // ══════════════════════════════════════════════════════════════════
 var string BIAS      = "NEUTRAL"
 var int    trend_cnt = 0
 
-var float HH_p = na; var int HH_b = na
-var float HL_p = na; var int HL_b = na
-var float LH_p = na; var int LH_b = na
-var float LL_p = na; var int LL_b = na
+var float HH_p = na;  var int HH_b = na
+var float HL_p = na;  var int HL_b = na
+var float LH_p = na;  var int LH_b = na
+var float LL_p = na;  var int LL_b = na
 
-// Alternating sequence gate
 var string last_type = "NONE"
-var float  last_H_p  = na; var int last_H_b = na
-var float  last_L_p  = na; var int last_L_b = na
+var float  last_H_p  = na;  var int last_H_b = na
+var float  last_L_p  = na;  var int last_L_b = na
 
 // ══════════════════════════════════════════════════════════════════
-//  §5  SIGNAL STATE
+//  §5  FIB STATE  — anchors captured at CHoCH moment
+// ══════════════════════════════════════════════════════════════════
+var float FIB_HIGH = na   // top anchor (LH for long signal, HH for short signal)
+var float FIB_LOW  = na   // bottom anchor (LL for long, HL for short)
+var int   FIB_SIDE = 0    // +1 = bullish, -1 = bearish
+
+// ══════════════════════════════════════════════════════════════════
+//  §6  SIGNAL STATE
 // ══════════════════════════════════════════════════════════════════
 var string SIG_DIR   = na
 var float  SIG_ENTRY = na
 var float  SIG_STOP  = na
-var float  SIG_TP    = na   // pre-computed TP for strategy.exit()
+var float  SIG_TP1   = na   // 1.618 extension (TP1, 34%)
+var float  SIG_TP2   = na   // 2.272 extension (TP2, 33%)
+var float  SIG_TP3   = na   // 2.618 extension (TP3, 33%)
 var int    SIG_ARMED = na
 var bool   SIG_CONF  = false
 var int    SIG_SW    = 0
 
 // ══════════════════════════════════════════════════════════════════
-//  §6  TRADE TRACKING  (mirrors strategy position for local gating)
+//  §7  TRADE TRACKING
 // ══════════════════════════════════════════════════════════════════
 var bool   IN_TRADE  = false
 var string TR_DIR    = na
-var float  TR_ENTRY  = na
-var float  TR_STOP   = na
-var float  TR_TP     = na
 
-// Polyline for swing structure
-var array<chart.point> sw_pts  = array.new<chart.point>()
-var polyline           sw_poly = na
-
-// Dashboard table
-var table DASH = na
-
-// Signal zone box
-var box SIG_BOX = na
+var array<chart.point> sw_pts   = array.new<chart.point>()
+var polyline           sw_poly  = na
+var table              DASH     = na
+var box                SIG_BOX  = na
+var line               SIG_LINE = na
+var array<box>         FIB_BOXES = array.new<box>()
+var array<line>        FIB_LINES = array.new<line>()
 
 // ══════════════════════════════════════════════════════════════════
-//  §7  HELPER FUNCTIONS (pure — no side effects on outer vars)
+//  §8  HELPER FUNCTIONS
 // ══════════════════════════════════════════════════════════════════
+_clear_fib_drawings() =>
+    for b in FIB_BOXES
+        box.delete(b)
+    FIB_BOXES.clear()
+    for l in FIB_LINES
+        line.delete(l)
+    FIB_LINES.clear()
 
-calc_long(float hh, float hl) =>
-    rng   = hh - hl
-    entry = hl + rng / i_mult
-    stop  = hl * (1.0 - i_stop_pct)
-    risk  = math.abs(entry - stop)
-    tp    = entry + risk * i_tp_rr
-    [entry, stop, tp]
-
-calc_short(float lh, float ll) =>
-    rng   = lh - ll
-    entry = lh - rng / i_mult
-    stop  = lh * (1.0 + i_stop_pct)
-    risk  = math.abs(stop - entry)
-    tp    = entry - risk * i_tp_rr
-    [entry, stop, tp]
-
-arm_long_sig(float hh, float hl, int at, int sw) =>
-    [e, s, t] = calc_long(hh, hl)
-    [e, s, t, "LONG", at, sw]
-
-arm_short_sig(float lh, float ll, int at, int sw) =>
-    [e, s, t] = calc_short(lh, ll)
-    [e, s, t, "SHORT", at, sw]
+_clear_signal() =>
+    SIG_DIR   := na
+    SIG_ENTRY := na
+    SIG_STOP  := na
+    SIG_TP1   := na
+    SIG_TP2   := na
+    SIG_TP3   := na
+    SIG_ARMED := na
+    SIG_CONF  := false
+    SIG_SW    := 0
+    box.delete(SIG_BOX)
+    line.delete(SIG_LINE)
 
 dash_row(table t, int r, string lbl, string val, color vc) =>
-    table.cell(t, 0, r, lbl, text_color=color.new(color.silver, 15),
-               text_size=size.small, bgcolor=color.new(color.black, 62),
-               text_halign=text.align_left)
+    table.cell(t, 0, r, lbl, text_color=color.new(color.silver,15),
+               text_size=size.small, bgcolor=color.new(color.black,62), text_halign=text.align_left)
     table.cell(t, 1, r, val, text_color=vc,
-               text_size=size.small, bgcolor=color.new(color.black, 62),
-               text_halign=text.align_right)
+               text_size=size.small, bgcolor=color.new(color.black,62), text_halign=text.align_right)
+
+// Draw retracement zone boxes + extension level lines
+// side: +1 = long setup, -1 = short setup
+_draw_fib(float fh, float fl, int side, float entry, float tp1, float tp2, float tp3) =>
+    if i_fib_vis
+        rng = fh - fl
+        x1  = bar_index
+        x2  = bar_index + v_expiry + 8
+
+        if side == 1
+            // Retracement zones: 0→0.5 gray, 0.5→0.618 green (entry zone)
+            FIB_BOXES.push(box.new(x1, fl + 0.5*rng, x2, fl,
+                           bgcolor=color.new(color.gray,88), border_color=color.new(color.gray,55), border_width=1))
+            FIB_BOXES.push(box.new(x1, fl + 0.618*rng, x2, fl + 0.5*rng,
+                           bgcolor=color.new(color.lime,75), border_color=color.new(color.lime,40), border_width=1))
+            // 0-level (FIB_LOW) and 1-level (FIB_HIGH) reference lines
+            FIB_LINES.push(line.new(x1, fl,  x2, fl,  color=color.new(color.gray,40), width=1))
+            FIB_LINES.push(line.new(x1, fh,  x2, fh,  color=color.new(color.gray,40), width=1, style=line.style_dashed))
+        else
+            // Short: retracement zones near the top (FIB_HIGH side)
+            FIB_BOXES.push(box.new(x1, fh, x2, fh - 0.5*rng,
+                           bgcolor=color.new(color.gray,88), border_color=color.new(color.gray,55), border_width=1))
+            FIB_BOXES.push(box.new(x1, fh - 0.5*rng, x2, fh - 0.618*rng,
+                           bgcolor=color.new(color.lime,75), border_color=color.new(color.lime,40), border_width=1))
+            FIB_LINES.push(line.new(x1, fh, x2, fh, color=color.new(color.gray,40), width=1))
+            FIB_LINES.push(line.new(x1, fl, x2, fl, color=color.new(color.gray,40), width=1, style=line.style_dashed))
+
+        // Extension levels (same for both directions — just draw at TP levels)
+        // 1.414 orange dashed
+        FIB_LINES.push(line.new(x1, tp1 - float(side)*0.254*rng, x2, tp1 - float(side)*0.254*rng,
+                       color=color.new(color.orange,50), width=1, style=line.style_dashed))
+        // 1.618 orange solid — TP1
+        FIB_LINES.push(line.new(x1, tp1, x2, tp1,
+                       color=color.new(color.orange,15), width=2))
+        // 2.0 red dashed
+        FIB_LINES.push(line.new(x1, tp1 + float(side)*0.654*rng, x2, tp1 + float(side)*0.654*rng,
+                       color=color.new(color.red,50), width=1, style=line.style_dashed))
+        // 2.272 red solid — TP2
+        FIB_LINES.push(line.new(x1, tp2, x2, tp2,
+                       color=color.new(color.red,15), width=2))
+        // 2.618 silver solid — TP3
+        FIB_LINES.push(line.new(x1, tp3, x2, tp3,
+                       color=color.new(color.silver,25), width=2))
 
 // ══════════════════════════════════════════════════════════════════
-//  §8  SYNC trade state at bar open
-//      strategy.position_size reflects fills from PREVIOUS bar
+//  §9  FIB CAPTURE FUNCTIONS
+//      Called BEFORE state-machine resets structural highs/lows
+// ══════════════════════════════════════════════════════════════════
+
+// Bullish CHoCH: prior swing was LH→LL (down).
+// Entry = LL + 0.618*(LH−LL)  i.e. pullback to 0.618 golden pocket
+// TBFE from entry: TP = entry + multiplier*(LH−LL)
+_arm_long_fib(float lh, float ll, int sw) =>
+    FIB_HIGH := lh
+    FIB_LOW  := ll
+    FIB_SIDE := 1
+    rng   = lh - ll
+    entry = ll  + 0.618 * rng
+    stop  = ll  * (1.0 - i_stop_pct)
+    tp1   = entry + 1.618 * rng
+    tp2   = entry + 2.272 * rng
+    tp3   = entry + 2.618 * rng
+    SIG_DIR   := "LONG"
+    SIG_ENTRY := entry
+    SIG_STOP  := stop
+    SIG_TP1   := tp1
+    SIG_TP2   := tp2
+    SIG_TP3   := tp3
+    SIG_ARMED := bar_index
+    SIG_CONF  := false
+    SIG_SW    := sw
+    _clear_fib_drawings()
+    _draw_fib(lh, ll, 1, entry, tp1, tp2, tp3)
+
+// Bearish CHoCH: prior swing was HL→HH (up).
+// Entry = HH − 0.618*(HH−HL)  i.e. retrace to 0.618 from the top
+_arm_short_fib(float hh, float hl, int sw) =>
+    FIB_HIGH := hh
+    FIB_LOW  := hl
+    FIB_SIDE := -1
+    rng   = hh - hl
+    entry = hh  - 0.618 * rng
+    stop  = hh  * (1.0 + i_stop_pct)
+    tp1   = entry - 1.618 * rng
+    tp2   = entry - 2.272 * rng
+    tp3   = entry - 2.618 * rng
+    SIG_DIR   := "SHORT"
+    SIG_ENTRY := entry
+    SIG_STOP  := stop
+    SIG_TP1   := tp1
+    SIG_TP2   := tp2
+    SIG_TP3   := tp3
+    SIG_ARMED := bar_index
+    SIG_CONF  := false
+    SIG_SW    := sw
+    _clear_fib_drawings()
+    _draw_fib(hh, hl, -1, entry, tp1, tp2, tp3)
+
+// ══════════════════════════════════════════════════════════════════
+//  §10  SYNC TRADE STATE
 // ══════════════════════════════════════════════════════════════════
 if IN_TRADE and strategy.position_size == 0
-    IN_TRADE := false    // TP / SL was hit on previous bar by the engine
+    IN_TRADE := false
 
 // ══════════════════════════════════════════════════════════════════
-//  §9  PROCESS PIVOT HIGH
+//  §11  PROCESS PIVOT HIGH
 // ══════════════════════════════════════════════════════════════════
 if is_ph
     ph_p = ph_raw
@@ -217,56 +301,44 @@ if is_ph
     is_new_h = last_type != "H"
     if last_type == "H"
         if ph_p > last_H_p
-            last_H_p := ph_p; last_H_b := ph_b
+            last_H_p := ph_p;  last_H_b := ph_b
     else
-        last_H_p := ph_p; last_H_b := ph_b; last_type := "H"
+        last_H_p := ph_p;  last_H_b := ph_b;  last_type := "H"
 
     if is_new_h
         if BIAS == "NEUTRAL"
             if na(HH_p) or ph_p >= HH_p * (1.0 - i_tol)
-                HH_p := ph_p; HH_b := ph_b
+                HH_p := ph_p;  HH_b := ph_b
                 if not na(HL_p)
-                    BIAS := "UPTREND"; trend_cnt := 1
-                    if not IN_TRADE
-                        [e, s, t, d, at, sw] = arm_long_sig(HH_p, HL_p, ph_b, trend_cnt)
-                        SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                        SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                    BIAS := "UPTREND";  trend_cnt := 1
 
         else if BIAS == "UPTREND"
             if ph_p >= HH_p * (1.0 - i_tol)
-                HH_p := ph_p; HH_b := ph_b; trend_cnt += 1
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
-                if not IN_TRADE and not na(HL_p)
-                    [e, s, t, d, at, sw] = arm_long_sig(HH_p, HL_p, ph_b, trend_cnt)
-                    SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                    SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                HH_p := ph_p;  HH_b := ph_b;  trend_cnt += 1
+                _clear_signal()
             else
-                LH_p := ph_p; LH_b := ph_b
+                LH_p := ph_p;  LH_b := ph_b
 
         else if BIAS == "DOWNTREND"
             if not na(LH_p) and ph_p > LH_p * (1.0 + i_tol)
-                BIAS := "UPTREND"; trend_cnt := 1
-                HH_p := ph_p; HH_b := ph_b
-                HL_p := LL_p; HL_b := LL_b
-                LH_p := na;   LL_p := na
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
-                if not IN_TRADE and not na(HL_p)
-                    [e, s, t, d, at, sw] = arm_long_sig(HH_p, HL_p, ph_b, trend_cnt)
-                    SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                    SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
-            else
-                LH_p := ph_p; LH_b := ph_b; trend_cnt += 1
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
+                // Pivot-based bullish CHoCH
                 if not IN_TRADE and not na(LL_p)
-                    [e, s, t, d, at, sw] = arm_short_sig(LH_p, LL_p, ph_b, trend_cnt)
-                    SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                    SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                    _arm_long_fib(LH_p, LL_p, trend_cnt)
+                BIAS := "UPTREND";  trend_cnt := 1
+                HH_p := ph_p;  HH_b := ph_b
+                HL_p := LL_p;  HL_b := LL_b
+                LH_p := na;    LL_p := na
+            else
+                LH_p := ph_p;  LH_b := ph_b;  trend_cnt += 1
+                _clear_signal()
+                if not IN_TRADE and not na(LL_p)
+                    _arm_short_fib(LH_p, LL_p, trend_cnt)
 
     if i_sw_line
         sw_pts.push(chart.point.from_index(ph_b, ph_p))
 
 // ══════════════════════════════════════════════════════════════════
-//  §10  PROCESS PIVOT LOW
+//  §12  PROCESS PIVOT LOW
 // ══════════════════════════════════════════════════════════════════
 if is_pl
     pl_p = pl_raw
@@ -275,177 +347,166 @@ if is_pl
     is_new_l = last_type != "L"
     if last_type == "L"
         if pl_p < last_L_p
-            last_L_p := pl_p; last_L_b := pl_b
+            last_L_p := pl_p;  last_L_b := pl_b
     else
-        last_L_p := pl_p; last_L_b := pl_b; last_type := "L"
+        last_L_p := pl_p;  last_L_b := pl_b;  last_type := "L"
 
     if is_new_l
         if BIAS == "NEUTRAL"
             if na(HL_p) or pl_p < HL_p
-                HL_p := pl_p; HL_b := pl_b
+                HL_p := pl_p;  HL_b := pl_b
                 if not na(HH_p) and pl_p < HH_p
-                    BIAS := "DOWNTREND"; trend_cnt := 1
-                    LL_p := pl_p; LL_b := pl_b
-                    LH_p := HH_p; LH_b := HH_b
-                    SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
-                    if not IN_TRADE
-                        [e, s, t, d, at, sw] = arm_short_sig(LH_p, LL_p, pl_b, trend_cnt)
-                        SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                        SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                    BIAS := "DOWNTREND";  trend_cnt := 1
+                    LL_p := pl_p;  LL_b := pl_b
+                    LH_p := HH_p;  LH_b := HH_b
 
         else if BIAS == "UPTREND"
             if na(HL_p) or pl_p >= HL_p * (1.0 - i_tol)
-                HL_p := pl_p; HL_b := pl_b; trend_cnt += 1
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
+                HL_p := pl_p;  HL_b := pl_b;  trend_cnt += 1
+                _clear_signal()
                 if not IN_TRADE and not na(HH_p)
-                    [e, s, t, d, at, sw] = arm_long_sig(HH_p, HL_p, pl_b, trend_cnt)
-                    SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                    SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                    _arm_long_fib(HH_p, HL_p, trend_cnt)
             else
-                // Lower low = swing CHoCH → bear flip
-                BIAS := "DOWNTREND"; trend_cnt := 1
-                LL_p := pl_p; LL_b := pl_b
-                LH_p := HH_p; LH_b := HH_b
-                HH_p := na;   HL_p := na
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
-                if not IN_TRADE
-                    [e, s, t, d, at, sw] = arm_short_sig(LH_p, LL_p, pl_b, trend_cnt)
-                    SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                    SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                // Lower low = structural bearish CHoCH
+                if not IN_TRADE and not na(HH_p)
+                    _arm_short_fib(HH_p, HL_p, trend_cnt)
+                BIAS := "DOWNTREND";  trend_cnt := 1
+                LL_p := pl_p;  LL_b := pl_b
+                LH_p := HH_p;  LH_b := HH_b
+                HH_p := na;    HL_p := na
 
         else if BIAS == "DOWNTREND"
             if pl_p <= LL_p * (1.0 + i_tol)
-                LL_p := pl_p; LL_b := pl_b; trend_cnt += 1
-                SIG_DIR := na; SIG_ARMED := na; SIG_CONF := false
+                LL_p := pl_p;  LL_b := pl_b;  trend_cnt += 1
+                _clear_signal()
                 if not IN_TRADE
-                    [e, s, t, d, at, sw] = arm_short_sig(LH_p, LL_p, pl_b, trend_cnt)
-                    SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-                    SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+                    _arm_short_fib(LH_p, LL_p, trend_cnt)
             else
-                HL_p := pl_p; HL_b := pl_b
+                HL_p := pl_p;  HL_b := pl_b
 
     if i_sw_line
         sw_pts.push(chart.point.from_index(pl_b, pl_p))
 
-// Rebuild structural polyline on new pivot
+// Rebuild swing polyline
 if i_sw_line and (is_ph or is_pl) and sw_pts.size() >= 2
     while sw_pts.size() > 60
         sw_pts.shift()
     if not na(sw_poly)
         polyline.delete(sw_poly)
-    _sc     = BIAS == "UPTREND"   ? color.new(color.teal, 15) :
-              BIAS == "DOWNTREND" ? color.new(color.red,  15) : color.new(color.gray, 40)
+    _sc     = BIAS == "UPTREND"   ? color.new(color.teal,15) :
+              BIAS == "DOWNTREND" ? color.new(color.red, 15) : color.new(color.gray,40)
     sw_poly := polyline.new(sw_pts, curved=false, closed=false, line_color=_sc, line_width=2)
 
 // ══════════════════════════════════════════════════════════════════
-//  §11  CLOSE-BASED  CHoCH  (real-time, intra-swing)
+//  §13  CLOSE-BASED CHoCH  (fires on the exact candle)
 // ══════════════════════════════════════════════════════════════════
 choch_dn = false
 choch_up = false
 
 if BIAS == "UPTREND" and not na(HL_p) and close < HL_p * (1.0 - i_tol)
-    choch_dn  := true
-    BIAS      := "DOWNTREND"; trend_cnt := 1
-    LH_p      := na(HH_p) ? LH_p : HH_p
-    LH_b      := na(HH_p) ? LH_b : HH_b
-    LL_p      := na; LL_b := na
-    HH_p      := na; HL_p := na
-    SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
-    // Can't arm short yet — no confirmed LL from the flip bar alone
+    choch_dn := true
+    // Capture fib BEFORE resetting HH/HL
+    if not IN_TRADE and not na(HH_p)
+        _arm_short_fib(HH_p, HL_p, trend_cnt)
+    BIAS := "DOWNTREND";  trend_cnt := 1
+    LH_p := na(HH_p) ? LH_p : HH_p
+    LH_b := na(HH_p) ? LH_b : HH_b
+    LL_p := na;  LL_b := na
+    HH_p := na;  HL_p := na
 
 else if BIAS == "DOWNTREND" and not na(LH_p) and close > LH_p * (1.0 + i_tol)
-    choch_up  := true
-    BIAS      := "UPTREND"; trend_cnt := 1
-    HH_p      := LH_p; HH_b := LH_b   // approximate
-    HL_p      := LL_p; HL_b := LL_b
-    LH_p      := na;   LL_p := na
-    SIG_DIR   := na; SIG_ARMED := na; SIG_CONF := false
-    if not IN_TRADE and not na(HL_p) and HH_p > HL_p
-        [e, s, t, d, at, sw] = arm_long_sig(HH_p, HL_p, bar_index, trend_cnt)
-        SIG_ENTRY := e; SIG_STOP := s; SIG_TP := t
-        SIG_DIR := d; SIG_ARMED := at; SIG_CONF := false; SIG_SW := sw
+    choch_up := true
+    // Capture fib BEFORE resetting LH/LL
+    if not IN_TRADE and not na(LL_p)
+        _arm_long_fib(LH_p, LL_p, trend_cnt)
+    BIAS := "UPTREND";  trend_cnt := 1
+    HH_p := LH_p;  HH_b := LH_b
+    HL_p := LL_p;  HL_b := LL_b
+    LH_p := na;    LL_p := na
 
 // ══════════════════════════════════════════════════════════════════
-//  §12  SIGNAL  MANAGEMENT
+//  §14  SIGNAL MANAGEMENT
 // ══════════════════════════════════════════════════════════════════
 
 // Expiry
 if not na(SIG_DIR) and not na(SIG_ARMED) and (bar_index - SIG_ARMED) > v_expiry
-    SIG_DIR := na; SIG_ENTRY := na; SIG_STOP := na; SIG_TP := na
-    SIG_ARMED := na; SIG_CONF := false; SIG_SW := 0
-    box.delete(SIG_BOX)
+    _clear_signal()
+    _clear_fib_drawings()
 
-// Confirmation (price must trade beyond entry at least once before fill)
+// Confirmation: for fib long, entry is BELOW current price (pullback zone).
+// SIG_CONF fires as soon as price was ever at/above entry (which is immediate
+// after bullish CHoCH where close > LH > 0.618 level). Trigger fills when
+// price pulls back to touch SIG_ENTRY (low <= SIG_ENTRY).
 if not na(SIG_DIR) and not IN_TRADE
-    if SIG_DIR == "LONG"  and close > SIG_ENTRY
+    if SIG_DIR == "LONG"  and close >= SIG_ENTRY
         SIG_CONF := true
-    if SIG_DIR == "SHORT" and close < SIG_ENTRY
+    if SIG_DIR == "SHORT" and close <= SIG_ENTRY
         SIG_CONF := true
 
 // ══════════════════════════════════════════════════════════════════
-//  §13  ENTRY  FILTERS  &  TRIGGER
+//  §15  ENTRY FILTERS & TRIGGER
 // ══════════════════════════════════════════════════════════════════
-adx_ok   = ADX > v_adx_thr
-rsi_chk  = SIG_DIR == "LONG" ? RSI > 50 : RSI < 50
-rsi_ok   = v_rsi_side ? rsi_chk : true
-filt_ok  = adx_ok and SIG_CONF and SIG_SW >= v_min_sw and rsi_ok and not IN_TRADE and not na(SIG_DIR)
+adx_ok  = ADX > v_adx_thr
+rsi_chk = SIG_DIR == "LONG" ? RSI > 50 : RSI < 50
+rsi_ok  = v_rsi_side ? rsi_chk : true
+filt_ok = adx_ok and SIG_CONF and SIG_SW >= v_min_sw and rsi_ok and not IN_TRADE and not na(SIG_DIR)
 
 entry_long  = filt_ok and SIG_DIR == "LONG"  and low  <= SIG_ENTRY
 entry_short = filt_ok and SIG_DIR == "SHORT" and high >= SIG_ENTRY
 
-// V3 rejection: candle must close back beyond the entry level
+// V3: candle must also close back above/below entry (rejection confirmation)
 if v_reject
     entry_long  := entry_long  and close > SIG_ENTRY
     entry_short := entry_short and close < SIG_ENTRY
 
 // ══════════════════════════════════════════════════════════════════
-//  §14  OPEN  TRADE  —  strategy.entry() + strategy.exit()
+//  §16  OPEN TRADE
+//       Three partial exits: 34% @ TP1 · 33% @ TP2 · 33%+SL @ TP3
 // ══════════════════════════════════════════════════════════════════
 if entry_long
-    // Store levels used for this trade (signal vars clear after entry)
     TR_DIR   := "LONG"
-    TR_ENTRY := SIG_ENTRY
-    TR_STOP  := SIG_STOP
-    TR_TP    := SIG_TP
     IN_TRADE := true
-
-    strategy.entry("Long", strategy.long, comment="▲ CHoCH Long")
-    strategy.exit("Long Exit",
-                  from_entry    = "Long",
+    strategy.entry("Long", strategy.long, comment="▲ CHoCH 0.618")
+    // qty_percent is % of the CURRENT open position when each exit fires
+    strategy.exit("Long TP1", from_entry="Long",
+                  qty_percent   = 34,
+                  limit         = SIG_TP1,
+                  comment_profit= "✔ TP1 1.618")
+    strategy.exit("Long TP2", from_entry="Long",
+                  qty_percent   = 50,       // 50% of remaining 66% ≈ 33% of original
+                  limit         = SIG_TP2,
+                  comment_profit= "✔ TP2 2.272")
+    strategy.exit("Long TP3", from_entry="Long",
+                  qty_percent   = 100,      // remaining 33%
+                  limit         = SIG_TP3,
                   stop          = SIG_STOP,
-                  limit         = SIG_TP,
-                  comment_loss  = "▼ Stop Loss",
-                  comment_profit= "✔ Take Profit")
-
-    // Clear signal
-    SIG_DIR := na; SIG_ENTRY := na; SIG_STOP := na; SIG_TP := na
-    SIG_ARMED := na; SIG_CONF := false; SIG_SW := 0
-    box.delete(SIG_BOX)
+                  comment_profit= "✔ TP3 2.618",
+                  comment_loss  = "▼ Stop Loss")
+    _clear_signal()
 
 if entry_short
     TR_DIR   := "SHORT"
-    TR_ENTRY := SIG_ENTRY
-    TR_STOP  := SIG_STOP
-    TR_TP    := SIG_TP
     IN_TRADE := true
-
-    strategy.entry("Short", strategy.short, comment="▼ CHoCH Short")
-    strategy.exit("Short Exit",
-                  from_entry    = "Short",
+    strategy.entry("Short", strategy.short, comment="▼ CHoCH 0.618")
+    strategy.exit("Short TP1", from_entry="Short",
+                  qty_percent   = 34,
+                  limit         = SIG_TP1,
+                  comment_profit= "✔ TP1 1.618")
+    strategy.exit("Short TP2", from_entry="Short",
+                  qty_percent   = 50,
+                  limit         = SIG_TP2,
+                  comment_profit= "✔ TP2 2.272")
+    strategy.exit("Short TP3", from_entry="Short",
+                  qty_percent   = 100,
+                  limit         = SIG_TP3,
                   stop          = SIG_STOP,
-                  limit         = SIG_TP,
-                  comment_loss  = "▲ Stop Loss",
-                  comment_profit= "✔ Take Profit")
-
-    SIG_DIR := na; SIG_ENTRY := na; SIG_STOP := na; SIG_TP := na
-    SIG_ARMED := na; SIG_CONF := false; SIG_SW := 0
-    box.delete(SIG_BOX)
+                  comment_profit= "✔ TP3 2.618",
+                  comment_loss  = "▲ Stop Loss")
+    _clear_signal()
 
 // ══════════════════════════════════════════════════════════════════
-//  §15  CLOSE  TRADE  —  Early exit / CHoCH flip / stop sync
+//  §17  CLOSE TRADE — early exit / CHoCH-against-position
 // ══════════════════════════════════════════════════════════════════
-
-// V3 Early Exit: if the bar right after entry closes against the trade, bail out
 if v_early and IN_TRADE and strategy.opentrades > 0
     _fill_bar = strategy.opentrades.entry_bar_index(0)
     if bar_index == _fill_bar + 1
@@ -456,7 +517,6 @@ if v_early and IN_TRADE and strategy.opentrades > 0
             strategy.close_all(comment="⚡ Early Exit")
             IN_TRADE := false
 
-// CHoCH against open position → close immediately
 if choch_dn and strategy.position_size > 0
     strategy.close_all(comment="CHoCH ↓ Flip")
     IN_TRADE := false
@@ -466,78 +526,70 @@ if choch_up and strategy.position_size < 0
     IN_TRADE := false
 
 // ══════════════════════════════════════════════════════════════════
-//  §16  V I S U A L S
+//  §18  VISUALS
 // ══════════════════════════════════════════════════════════════════
 
-// — Bias background —
+// Bias background
 if i_bg_v
-    bgcolor(BIAS == "UPTREND"   ? color.new(color.teal, 93) :
-            BIAS == "DOWNTREND" ? color.new(color.red,  93) : na,
+    bgcolor(BIAS == "UPTREND"   ? color.new(color.teal,93) :
+            BIAS == "DOWNTREND" ? color.new(color.red, 93) : na,
             title="Bias Background")
 
-// — Swing Labels (HH / HL / LH / LL) —
+// Swing labels
 if i_sw_lbl and is_ph
-    _hh_lbl = not na(HH_p) and ph_raw >= HH_p * (1.0 - i_tol)
-    _lbl    = BIAS == "UPTREND"   ? (_hh_lbl ? "HH" : "LH") :
-              BIAS == "DOWNTREND" ? "LH" : "H"
-    _lc     = _hh_lbl ? color.teal : color.orange
+    _hh = not na(HH_p) and ph_raw >= HH_p * (1.0 - i_tol)
+    _lbl = BIAS == "UPTREND"   ? (_hh ? "HH" : "LH") :
+           BIAS == "DOWNTREND" ? "LH" : "H"
+    _lc  = _hh ? color.teal : color.orange
     label.new(pivot_bar, ph_raw, _lbl, xloc=xloc.bar_index,
-              color=color.new(_lc, 72), textcolor=_lc,
+              color=color.new(_lc,72), textcolor=_lc,
               style=label.style_label_down, size=size.tiny)
 
 if i_sw_lbl and is_pl
-    _ll_lbl = not na(LL_p) and pl_raw <= LL_p * (1.0 + i_tol)
-    _lbl    = BIAS == "DOWNTREND" ? (_ll_lbl ? "LL" : "HL") :
-              BIAS == "UPTREND"   ? "HL" : "L"
-    _lc     = _ll_lbl ? color.red : color.green
+    _ll = not na(LL_p) and pl_raw <= LL_p * (1.0 + i_tol)
+    _lbl = BIAS == "DOWNTREND" ? (_ll ? "LL" : "HL") :
+           BIAS == "UPTREND"   ? "HL" : "L"
+    _lc  = _ll ? color.red : color.green
     label.new(pivot_bar, pl_raw, _lbl, xloc=xloc.bar_index,
-              color=color.new(_lc, 72), textcolor=_lc,
+              color=color.new(_lc,72), textcolor=_lc,
               style=label.style_label_up, size=size.tiny)
 
-// — CHoCH Markers —
+// CHoCH markers
 if i_choch_v and choch_dn
     label.new(bar_index, high, "CHoCH ↓",
-              color=color.new(color.red, 5), textcolor=color.white,
+              color=color.new(color.red,5), textcolor=color.white,
               style=label.style_label_down, size=size.normal)
 
 if i_choch_v and choch_up
     label.new(bar_index, low, "CHoCH ↑",
-              color=color.new(color.teal, 5), textcolor=color.white,
+              color=color.new(color.teal,5), textcolor=color.white,
               style=label.style_label_up, size=size.normal)
 
-// — Signal Entry Zone Box (shows the live entry level while signal is armed) —
-if i_zone_box
-    if not na(SIG_DIR) and not IN_TRADE
-        box.delete(SIG_BOX)
-        _zone  = ATR * 0.12
-        _is_l  = SIG_DIR == "LONG"
-        _bhi   = _is_l ? SIG_ENTRY + _zone : SIG_ENTRY
-        _blo   = _is_l ? SIG_ENTRY          : SIG_ENTRY - _zone
-        _bc    = _is_l ? color.new(color.teal, 80) : color.new(color.red, 80)
-        _brd   = _is_l ? color.new(color.teal, 35) : color.new(color.red, 35)
-        SIG_BOX := box.new(bar_index, _bhi, bar_index + v_expiry, _blo,
-                           bgcolor=_bc, border_color=_brd, border_width=1)
-    else if IN_TRADE or na(SIG_DIR)
-        box.delete(SIG_BOX)
-
-// — Signal dotted level line —
-var line SIG_LINE = na
+// Live signal zone box + dotted level line
 if not na(SIG_DIR) and not IN_TRADE
+    box.delete(SIG_BOX)
     line.delete(SIG_LINE)
-    _sc      = SIG_DIR == "LONG" ? color.new(color.teal, 20) : color.new(color.red, 20)
+    _zone = ATR * 0.15
+    _is_l = SIG_DIR == "LONG"
+    _bhi  = _is_l ? SIG_ENTRY + _zone : SIG_ENTRY
+    _blo  = _is_l ? SIG_ENTRY          : SIG_ENTRY - _zone
+    _bc   = _is_l ? color.new(color.teal,78) : color.new(color.red,78)
+    _brd  = _is_l ? color.new(color.teal,30) : color.new(color.red,30)
+    SIG_BOX  := box.new(bar_index, _bhi, bar_index + v_expiry, _blo,
+                        bgcolor=_bc, border_color=_brd, border_width=1)
+    _sc      = SIG_DIR == "LONG" ? color.new(color.teal,20) : color.new(color.red,20)
     SIG_LINE := line.new(bar_index, SIG_ENTRY, bar_index + 1, SIG_ENTRY,
                          extend=extend.right, color=_sc, width=2, style=line.style_dotted)
 else
+    box.delete(SIG_BOX)
     line.delete(SIG_LINE)
 
-// — Bar colouring while in trade —
+// Bar colouring while in trade
 if i_bar_col and IN_TRADE
-    barcolor(TR_DIR == "LONG" ? color.new(color.teal, 45) : color.new(color.red, 45))
+    barcolor(TR_DIR == "LONG" ? color.new(color.teal,45) : color.new(color.red,45))
 
 // ══════════════════════════════════════════════════════════════════
-//  §17  D A S H B O A R D
-//       (Strategy Tester panel shows full P&L stats automatically)
-//       Dashboard shows live structural context + current signal
+//  §19  DASHBOARD
 // ══════════════════════════════════════════════════════════════════
 if i_dash and barstate.islast
     _pos = switch i_dash_pos
@@ -545,82 +597,69 @@ if i_dash and barstate.islast
         "Top Left"    => position.top_left
         "Bottom Left" => position.bottom_left
         =>               position.bottom_right
-
-    DASH := table.new(_pos, 2, 11,
-                      bgcolor      = color.new(color.gray, 88),
-                      border_color = color.new(color.gray, 55),
+    DASH := table.new(_pos, 2, 14,
+                      bgcolor      = color.new(color.gray,88),
+                      border_color = color.new(color.gray,55),
                       border_width = 1,
-                      frame_color  = color.new(color.silver, 25),
+                      frame_color  = color.new(color.silver,25),
                       frame_width  = 2)
+    _net = strategy.netprofit
+    _wr  = strategy.closedtrades > 0 ?
+           strategy.wintrades / strategy.closedtrades * 100 : 0.0
+    _dd  = strategy.max_drawdown_percent
+    _pf  = strategy.grossprofit > 0 and math.abs(strategy.grossloss) > 0 ?
+           strategy.grossprofit / math.abs(strategy.grossloss) : 0.0
+    _eq  = strategy.equity
 
-    // Live P&L from strategy engine
-    _net    = strategy.netprofit
-    _wr     = strategy.closedtrades > 0 ?
-              strategy.wintrades / strategy.closedtrades * 100 : 0.0
-    _dd     = strategy.max_drawdown_percent
-    _pf     = strategy.grossprofit > 0 and math.abs(strategy.grossloss) > 0 ?
-              strategy.grossprofit / math.abs(strategy.grossloss) : 0.0
-    _eq     = strategy.equity
-    _sig_s  = not na(SIG_DIR) ?
-              SIG_DIR + " @ " + str.tostring(SIG_ENTRY, "#.##") : "—"
-    _open_s = strategy.position_size != 0 ?
-              (strategy.position_size > 0 ? "LONG" : "SHORT") +
-              " @ " + str.tostring(strategy.position_avg_price, "#.##") : "—"
+    _sig_s = not na(SIG_DIR) ?
+             SIG_DIR + " @ " + str.tostring(SIG_ENTRY, "#.##") : "—"
+    _tp_s  = not na(SIG_TP1) ?
+             str.tostring(SIG_TP1,"#.#") + " / " +
+             str.tostring(SIG_TP2,"#.#") + " / " +
+             str.tostring(SIG_TP3,"#.#") : "—"
+    _rng_s = not na(FIB_HIGH) and not na(FIB_LOW) ?
+             str.tostring(FIB_HIGH - FIB_LOW, "#.##") : "—"
 
-    // Header
-    _hc = BIAS == "UPTREND"   ? color.new(color.teal, 20) :
-          BIAS == "DOWNTREND" ? color.new(color.red,  20) : color.new(color.navy, 25)
-    table.cell(DASH, 0, 0, "CHoCH BIAS PRO · " + i_variant,
+    _hc = BIAS == "UPTREND"   ? color.new(color.teal,20) :
+          BIAS == "DOWNTREND" ? color.new(color.red, 20) : color.new(color.navy,25)
+    table.cell(DASH,0,0,"CHoCH FIB · " + i_variant,
                text_color=color.white, text_size=size.small,
                bgcolor=_hc, text_halign=text.align_left)
-    table.cell(DASH, 1, 0, BIAS,
+    table.cell(DASH,1,0, BIAS,
                text_color = BIAS == "UPTREND"   ? color.teal :
                             BIAS == "DOWNTREND" ? color.red  : color.gray,
                text_size=size.small, bgcolor=_hc, text_halign=text.align_right)
 
-    // Rows
-    dash_row(DASH,  1, " Trades",    str.tostring(strategy.closedtrades),              color.white)
-    dash_row(DASH,  2, " Win Rate",  str.tostring(_wr,  "#.1") + "%",                  _wr>=65?color.lime:_wr>=50?color.yellow:color.red)
-    dash_row(DASH,  3, " Net P&L",   (_net>=0?"$+":"$") + str.tostring(_net,"#.##"),   _net>=0?color.lime:color.red)
-    dash_row(DASH,  4, " Equity",    "$" + str.tostring(_eq, "#.##"),                  color.white)
-    dash_row(DASH,  5, " Profit F.",  str.tostring(_pf,  "#.2"),                        _pf>=1.5?color.lime:_pf>=1?color.yellow:color.red)
-    dash_row(DASH,  6, " Max DD",    str.tostring(_dd,  "#.1") + "%",                  _dd<=10?color.lime:_dd<=20?color.yellow:color.red)
-    dash_row(DASH,  7, " ADX",       str.tostring(ADX,  "#.1"),                        ADX>v_adx_thr?color.lime:color.yellow)
-    dash_row(DASH,  8, " RSI",       str.tostring(RSI,  "#.1"),                        RSI>70?color.orange:RSI<30?color.aqua:color.white)
-    dash_row(DASH,  9, " Signal",    _sig_s,                                            color.yellow)
-    dash_row(DASH, 10, " Open",      _open_s,                                           strategy.position_size!=0?color.orange:color.new(color.gray,20))
+    dash_row(DASH,  1, " Trades",    str.tostring(strategy.closedtrades),         color.white)
+    dash_row(DASH,  2, " Win Rate",  str.tostring(_wr, "#.1") + "%",              _wr>=65?color.lime:_wr>=50?color.yellow:color.red)
+    dash_row(DASH,  3, " Net P&L",   (_net>=0?"$+":"$")+str.tostring(_net,"#.##"),_net>=0?color.lime:color.red)
+    dash_row(DASH,  4, " Equity",    "$" + str.tostring(_eq,"#.##"),              color.white)
+    dash_row(DASH,  5, " Profit F.", str.tostring(_pf,"#.2"),                     _pf>=1.5?color.lime:_pf>=1?color.yellow:color.red)
+    dash_row(DASH,  6, " Max DD",    str.tostring(_dd,"#.1") + "%",               _dd<=10?color.lime:_dd<=20?color.yellow:color.red)
+    dash_row(DASH,  7, " ADX",       str.tostring(ADX,"#.1"),                     ADX>v_adx_thr?color.lime:color.yellow)
+    dash_row(DASH,  8, " RSI",       str.tostring(RSI,"#.1"),                     RSI>70?color.orange:RSI<30?color.aqua:color.white)
+    dash_row(DASH,  9, " Signal",    _sig_s,                                      color.yellow)
+    dash_row(DASH, 10, " TPs",       _tp_s,                                       color.new(color.orange,20))
+    dash_row(DASH, 11, " Fib Rng",   _rng_s,                                      color.white)
+    dash_row(DASH, 12, " Open",      strategy.position_size != 0 ?
+             (strategy.position_size>0?"LONG":"SHORT") + " @ " +
+             str.tostring(strategy.position_avg_price,"#.##") : "—",
+             strategy.position_size!=0?color.orange:color.new(color.gray,20))
+    dash_row(DASH, 13, " Open P&L",  strategy.position_size != 0 ?
+             (strategy.openprofit>=0?"$+":"$")+str.tostring(strategy.openprofit,"#.##") : "—",
+             strategy.openprofit>=0?color.lime:color.red)
 
 // ══════════════════════════════════════════════════════════════════
-//  §18  P L O T S  (invisible — used by alert {{plot}} tokens)
+//  §20  PLOTS & ALERTS
 // ══════════════════════════════════════════════════════════════════
 plot(strategy.position_size != 0 ? strategy.position_avg_price : na,
      "Entry Price", color=na, display=display.none)
-plot(IN_TRADE ? TR_STOP : na, "Active SL", color=na, display=display.none)
-plot(IN_TRADE ? TR_TP   : na, "Active TP", color=na, display=display.none)
+plot(not na(SIG_TP1) ? SIG_TP1 : na, "Active TP1", color=na, display=display.none)
+plot(not na(SIG_TP3) ? SIG_TP3 : na, "Active TP3", color=na, display=display.none)
 
-// ══════════════════════════════════════════════════════════════════
-//  §19  A L E R T S
-// ══════════════════════════════════════════════════════════════════
-alertcondition(entry_long,
-               title   = "LONG Entry",
-               message = "CHoCH Pro ▲ LONG @ {{close}}  SL={{plot_1}}  TP={{plot_2}}")
-
-alertcondition(entry_short,
-               title   = "SHORT Entry",
-               message = "CHoCH Pro ▼ SHORT @ {{close}}  SL={{plot_1}}  TP={{plot_2}}")
-
-alertcondition(choch_up,
-               title   = "CHoCH Bull Flip",
-               message = "CHoCH: Bearish → Bullish flip @ {{close}}")
-
-alertcondition(choch_dn,
-               title   = "CHoCH Bear Flip",
-               message = "CHoCH: Bullish → Bearish flip @ {{close}}")
-
+alertcondition(entry_long,  "LONG Entry",   "CHoCH Fib ▲ LONG 0.618 @ {{close}}")
+alertcondition(entry_short, "SHORT Entry",  "CHoCH Fib ▼ SHORT 0.618 @ {{close}}")
+alertcondition(choch_up,    "CHoCH ↑ Flip", "CHoCH: Bear→Bull flip @ {{close}}")
+alertcondition(choch_dn,    "CHoCH ↓ Flip", "CHoCH: Bull→Bear flip @ {{close}}")
 alertcondition(not na(SIG_DIR) and not IN_TRADE,
-               title   = "Signal Armed",
-               message = "CHoCH: {{interval}} signal armed — waiting for entry @ {{close}}")
-
-alertcondition(IN_TRADE and strategy.openprofit < 0,
-               title   = "Trade Underwater",
-               message = "CHoCH: Open trade in drawdown @ {{close}}")
+               "Signal Armed", "CHoCH Fib: {{interval}} signal armed — waiting for 0.618 pullback")
