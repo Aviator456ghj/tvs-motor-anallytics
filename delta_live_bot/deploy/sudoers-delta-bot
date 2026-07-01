@@ -1,0 +1,9 @@
+# Lets the dashboard (running as "ubuntu") start/stop/restart exactly one
+# systemd unit, nothing else, without a password. Install with:
+#   sudo visudo -cf deploy/sudoers-delta-bot   # validate syntax first
+#   sudo cp deploy/sudoers-delta-bot /etc/sudoers.d/delta-bot
+#   sudo chmod 440 /etc/sudoers.d/delta-bot
+#
+# Confirm the systemctl path matches your system first (`which systemctl`,
+# usually /usr/bin/systemctl on Ubuntu) and edit below if it differs.
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start delta-bot.service, /usr/bin/systemctl stop delta-bot.service, /usr/bin/systemctl restart delta-bot.service

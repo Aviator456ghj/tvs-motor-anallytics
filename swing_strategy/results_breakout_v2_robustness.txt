@@ -1,0 +1,39 @@
+========================================================================================================
+CHECK 1: WALK-FORWARD SPLIT (pivots and trades computed independently in each half)
+========================================================================================================
+Split date: 2025-08-15  (first half: 2024-07-07 -> 2025-08-14, 404 days; second half: 2025-08-15 -> 2026-06-27, 317 days)
+
+Half          Thresh  Legs  Closed   W   L  WinRate    AvgR     NetPnL
+FIRST HALF       5%    74       2   1   1    50.0%  +0.21R     +20.91
+FIRST HALF       6%    60       4   3   1    75.0%  +1.20R    +240.93
+FIRST HALF       8%    40       1   1   0   100.0%  +1.99R     +99.32
+FIRST HALF      10%    26       1   0   1     0.0%  -1.00R     -50.00
+FIRST HALF      12%    18       1   0   1     0.0%  -1.00R     -50.00
+FIRST HALF      15%    12       0   0   0     0.0%  +0.00R      +0.00
+SECOND HALF      5%    58       5   2   3    40.0%  +0.27R     +67.43
+SECOND HALF      6%    40       3   0   3     0.0%  -1.00R    -150.00
+SECOND HALF      8%    28       1   0   1     0.0%  -1.00R     -50.00
+SECOND HALF     10%    18       1   1   0   100.0%  +1.92R     +95.88
+SECOND HALF     12%    12       0   0   0     0.0%  +0.00R      +0.00
+SECOND HALF     15%     4       0   0   0     0.0%  +0.00R      +0.00
+
+A genuinely robust edge should show up (net-positive, similar win rate) in BOTH halves at the thresholds with a usable sample, not just one.
+
+========================================================================================================
+CHECK 2: DAILY HA-BIAS FILTER (only take a v2 breakout if it agrees with yesterday's HA color)
+========================================================================================================
+Thresh Filter      Legs  Closed   W   L  WinRate    AvgR     NetPnL
+   5% unfiltered   133       7   3   4    42.9%  +0.25R     +88.33
+   5% bias-OK      133       7   3   4    42.9%  +0.25R     +88.33
+   6% unfiltered   101       7   3   4    42.9%  +0.26R     +90.93
+   6% bias-OK      101       7   3   4    42.9%  +0.26R     +90.93
+   8% unfiltered    69       2   1   1    50.0%  +0.49R     +49.32
+   8% bias-OK       69       2   1   1    50.0%  +0.49R     +49.32
+  10% unfiltered    47       2   1   1    50.0%  +0.46R     +45.88
+  10% bias-OK       47       2   1   1    50.0%  +0.46R     +45.88
+  12% unfiltered    33       1   0   1     0.0%  -1.00R     -50.00
+  12% bias-OK       33       1   0   1     0.0%  -1.00R     -50.00
+  15% unfiltered    19       0   0   0     0.0%  +0.00R      +0.00
+  15% bias-OK       19       0   0   0     0.0%  +0.00R      +0.00
+
+If the filter trims the loser trades, 'bias-OK' rows should show a higher win rate / net P&L than 'unfiltered' on a meaningfully smaller sample; if it just throws away trades at the same ratio, the bias filter is adding no information on top of the breakout signal itself.

@@ -1,0 +1,26 @@
+# Keeps bot.py running continuously on the VPS: auto-restarts on crash,
+# starts on boot. Install with:
+#   sudo cp deploy/delta-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now delta-bot.service
+#   journalctl -u delta-bot.service -f      # tail logs
+#
+# Adjust User=/WorkingDirectory if your checkout isn't at this path or
+# isn't owned by "ubuntu".
+[Unit]
+Description=Delta Live Bot - breakout-continuation (BTCUSD)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tvs-motor-anallytics/delta_live_bot
+EnvironmentFile=/home/ubuntu/tvs-motor-anallytics/delta_live_bot/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 bot.py --loop 900
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

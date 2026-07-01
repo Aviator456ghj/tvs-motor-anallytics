@@ -1,0 +1,54 @@
+==============================================================================================================
+TRIDENT SYSTEM - BTCUSD 30-MINUTE BACKTEST (structural test only - see module docstring)
+==============================================================================================================
+Data range: 2026-05-28 10:30:00 -> 2026-06-27 10:00:00  (1440 M30 candles, aggregated from 5-min)
+CAVEAT: this playbook targets FX majors/Gold and claims ~6-15 signals PER YEAR per instrument. Tested here on 30 days of BTCUSD only - not a fair sample either way.
+Kill zone (NY time): 03:00:00-06:30:00   EMA stack: (5, 9, 13, 21)   Baseline: 200-EMA   Min RR: 1:20
+
+  # Dir     EntryIdx   ExitIdx      Entry         SL         TP Res         PnL$       R W-L     
+
+--------------------------------------------------------------------------------------------------------------
+FUNNEL (how many M30 bars survive each gate)
+  Inside kill zone                         : 181
+  + 200-EMA trend filter passes             : 181
+  + 5/9/13/21 EMA stack aligned             : 75
+  + FVG + Doji-at-CE pattern found          : 0
+  + Candle 4 confirmation close ok          : 0
+  + valid risk -> traded                    : 0
+
+SUMMARY
+Trades still open at data end   : 0
+Closed trades                   : 0
+  Wins                          : 0
+  Losses                        : 0
+
+--------------------------------------------------------------------------------------------------------------
+FVG DIAGNOSTIC (does Candle1->Candle2 gap exist at all, ignoring every other filter?)
+--------------------------------------------------------------------------------------------------------------
+M30 candles scanned                      : 1440
+Bullish FVG occurrences (c2.low > c1.high): 1
+Bearish FVG occurrences (c2.high < c1.low): 0
+  of which doji sits at the 50% CE level  : 0
+
+This is the real root cause of the zero-trade result, more fundamental than the 200-EMA/stack/kill-zone gates upstream: continuous 24/7 crypto trading almost never leaves a true gap between one M30 candle's high/low and the next's, unlike session-based FX/equities/Gold where the FVG pattern this playbook is built around actually forms (open-outside-prior-range gaps at session opens, news, etc). No sweep of the doji-ratio or min-RR parameters can fix this - the precondition the pattern depends on essentially doesn't exist in this market/timeframe/dataset.
+
+--------------------------------------------------------------------------------------------------------------
+PARAMETER SWEEP (doji body ratio x minimum RR target)
+--------------------------------------------------------------------------------------------------------------
+DojiRatio  MinRR  Traded Closed   W   L  WinRate     NetPnL
+     0.20      5       0      0   0   0     0.0%      +0.00
+     0.20     10       0      0   0   0     0.0%      +0.00
+     0.20     15       0      0   0   0     0.0%      +0.00
+     0.20     20       0      0   0   0     0.0%      +0.00
+     0.30      5       0      0   0   0     0.0%      +0.00
+     0.30     10       0      0   0   0     0.0%      +0.00
+     0.30     15       0      0   0   0     0.0%      +0.00
+     0.30     20       0      0   0   0     0.0%      +0.00
+     0.40      5       0      0   0   0     0.0%      +0.00
+     0.40     10       0      0   0   0     0.0%      +0.00
+     0.40     15       0      0   0   0     0.0%      +0.00
+     0.40     20       0      0   0   0     0.0%      +0.00
+     0.50      5       0      0   0   0     0.0%      +0.00
+     0.50     10       0      0   0   0     0.0%      +0.00
+     0.50     15       0      0   0   0     0.0%      +0.00
+     0.50     20       0      0   0   0     0.0%      +0.00

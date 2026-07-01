@@ -1,0 +1,32 @@
+====================================================================================================
+BREAKOUT-CONTINUATION v2 STRATEGY - 8% zig-zag, 2024-07-07 -> 2026-06-27
+====================================================================================================
+Close-confirmed breakout entry (next bar's open), stop = 61.8% giveback of the leg's range from the breakout level, target = 161.8% extension.
+Breakout buffer: 0.2%   SL giveback: 61.8%   TP extension: 161.8%
+
+  # Dir    Entry Date  Exit Date        Entry         SL         TP Res       PnL$      R W-L         Equity$
+  1 LONG   2024-11-07  2024-11-21    75,642.1   64,645.5   97,485.5 WIN      99.32   1.99 1-0        5,099.32
+  2 SHORT  2026-02-24  2026-02-25    64,624.1   69,381.7   53,318.5 LOSS    -50.00  -1.00 1-1        5,049.32
+
+----------------------------------------------------------------------------------------------------
+SUMMARY
+Legs evaluated      : 69
+Never broke out     : 67
+Closed trades       : 2
+  Wins              : 1
+  Losses            : 1
+  Win rate          : 50.0%
+  Avg R-multiple    : +0.49R
+  Net P&L           : $+49.32  ($5,000 -> $5,049.32)
+  Longest win/loss streak: 1 / 1
+
+----------------------------------------------------------------------------------------------------
+THRESHOLD SENSITIVITY SWEEP (same SL/TP design, varying zig-zag %)
+----------------------------------------------------------------------------------------------------
+Thresh  Legs NoBreak  Closed   W   L  WinRate     NetPnL
+   5%   133     126       7   3   4    42.9%     +88.33
+   6%   101      94       7   3   4    42.9%     +90.93
+   8%    69      67       2   1   1    50.0%     +49.32
+  10%    47      45       2   1   1    50.0%     +45.88
+  12%    33      32       1   0   1     0.0%     -50.00
+  15%    19      18       0   0   0     0.0%      +0.00

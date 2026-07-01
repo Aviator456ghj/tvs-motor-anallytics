@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# delta_live_bot secrets/state - never commit real credentials or live state
+delta_live_bot/.env
+delta_live_bot/bot_state.json
+delta_live_bot/status.json
