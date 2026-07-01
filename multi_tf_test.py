@@ -307,6 +307,8 @@ def summarise(trades, df_price):
 
 # ── 6. MAIN ──────────────────────────────────────────────────
 TF_PAGES = {
+    "15m": 234,  # ~70,000 candles ≈ 2 years
+    "30m": 117,  # ~35,000 candles ≈ 2 years
     "1h":  60,   # ~18,000 candles ≈ 2 years
     "4h":  25,   # ~7,500  candles ≈ 3.5 years
     "1D":  0,    # load from CSV
@@ -346,7 +348,7 @@ print(SEP)
 hdr = f"  {'TF':>4}  {'Variant':>7}  {'Trades':>7}  {'WR':>6}  {'$1 →':>7}  {'CAGR':>7}  {'MaxDD':>7}  {'Avg Win':>8}  {'Avg Loss':>9}  {'R:R':>5}  {'Expect':>8}"
 print(hdr)
 print("  " + "─"*97)
-for tf in ["1h","4h","1D","7D"]:
+for tf in ["15m","30m","1h","4h","1D","7D"]:
     for vname in ["V1","V2","V3"]:
         s = results[tf][vname]
         print(f"  {tf:>4}  {vname:>7}  {s['trades']:>7}  {s['wr']:>5.1f}%  "
