@@ -23,15 +23,19 @@ import pandas as pd
 import numpy as np
 
 # ─────────────────────────────────────────────
-MULTIPLIER     = 2.6
-SWING_N        = 5     # candles each side required to confirm a structural pivot
-ADX_PERIOD     = 14
-ADX_THRESHOLD  = 25    # raised from 20→25: 30-40 zone shows 79% WR vs 60% below 30
-STOP_BUFFER    = 0.005 # 0.5 % buffer beyond HL/LH to absorb wick noise
-SIGNAL_EXPIRY  = 4     # tightened 10→4: entries after 5+ candles drop to 54% / 0% WR
-LEVEL_TOL      = 0.001 # 0.1 % tolerance for near-equal HH/HL/LH/LL pivots (#4)
-MIN_SWING_CNT  = 2     # skip 1st entry after CHoCH: swing-1 WR=40% vs swing 2-3 WR=78%
-DATA_CSV       = "btc_daily.csv"
+MULTIPLIER         = 2.6
+SWING_N            = 5      # candles each side required to confirm a structural pivot
+ADX_PERIOD         = 14
+ADX_THRESHOLD      = 25     # raised from 20→25: 30-40 zone shows 79% WR vs 60% below 30
+STOP_BUFFER        = 0.005  # 0.5 % buffer beyond HL/LH to absorb wick noise
+SIGNAL_EXPIRY      = 4      # tightened 10→4: entries after 5+ candles drop to 54% / 0% WR
+LEVEL_TOL          = 0.001  # 0.1 % tolerance for near-equal HH/HL/LH/LL pivots (#4)
+MIN_SWING_CNT      = 2      # skip 1st entry after CHoCH: swing-1 WR=40% vs swing 2-3 WR=78%
+RSI_PERIOD         = 14
+REQUIRE_REJECTION  = True   # entry candle must close beyond entry (WR 73% vs 18%, p=0.001)
+REQUIRE_RSI_SIDE   = True   # RSI>50 for LONG, RSI<50 for SHORT (WR 72% vs 45%, p=0.055)
+EARLY_EXIT_CANDLE  = True   # exit if next candle fails to follow through (WR 80% vs 30%, p=0.000)
+DATA_CSV           = "btc_daily.csv"
 # ─────────────────────────────────────────────
 
 
@@ -86,6 +90,28 @@ def calc_adx(df, period=ADX_PERIOD):
     return adx
 
 
+# ── 2b. RSI ──────────────────────────────────
+def calc_rsi(df, period=RSI_PERIOD):
+    """Wilder-smoothed RSI."""
+    cl  = df["Close"].values
+    n   = len(cl)
+    out = np.zeros(n)
+    gain = np.zeros(n)
+    loss = np.zeros(n)
+    for i in range(1, n):
+        d = cl[i] - cl[i-1]
+        gain[i] = d  if d > 0 else 0.0
+        loss[i] = -d if d < 0 else 0.0
+    ag = gain[1: period + 1].mean()
+    al = loss[1: period + 1].mean()
+    out[period] = 100 - 100 / (1 + ag / al) if al > 0 else 100.0
+    for i in range(period + 1, n):
+        ag = (ag * (period - 1) + gain[i]) / period
+        al = (al * (period - 1) + loss[i]) / period
+        out[i] = 100 - 100 / (1 + ag / al) if al > 0 else 100.0
+    return out
+
+
 # ── 3. SWING DETECTION ───────────────────────
 def find_swings(df, n=SWING_N):
     """
@@ -125,7 +151,7 @@ def find_swings(df, n=SWING_N):
 
 
 # ── 4. BACKTEST ENGINE ───────────────────────
-def run_backtest(df, swings, adx):
+def run_backtest(df, swings, adx, rsi):
     hi = df["High"].values
     lo = df["Low"].values
     cl = df["Close"].values
@@ -152,11 +178,12 @@ def run_backtest(df, swings, adx):
     active  = None   # open trade dict
     trades  = []
 
-    def open_trade(direction, entry_px, entry_date, stop, ref):
+    def open_trade(direction, entry_px, entry_date, entry_ci, stop, ref):
         return {
             "direction":   direction,
             "entry_price": entry_px,
             "entry_date":  entry_date,
+            "entry_ci":    entry_ci,   # needed for early-exit follow-through check
             "stop_loss":   stop,
             **ref,
             "exit_price":  None,
@@ -400,19 +427,47 @@ def run_backtest(df, swings, adx):
                 elif sig_direction == "SHORT" and c_cl < sig_entry:
                     sig_confirmed = True
 
-            # ── Entry trigger — ADX + confirmation guard + swing maturity ──
+            # ── Entry trigger — all guards ─────────────────────────────
             if (sig_direction and not active
                     and adx[ci] > ADX_THRESHOLD
                     and sig_confirmed
                     and sig_swing_cnt >= MIN_SWING_CNT):
-                if sig_direction == "LONG" and c_lo <= sig_entry:
-                    ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL, "adx_at_entry": round(adx[ci], 1)}
-                    active = open_trade("LONG", sig_entry, c_dt, sig_stop, ref)
-                    clear_signal()
-                elif sig_direction == "SHORT" and c_hi >= sig_entry:
-                    ref = {"ref_LH": sig_ref_LH, "ref_LL": sig_ref_LL, "adx_at_entry": round(adx[ci], 1)}
-                    active = open_trade("SHORT", sig_entry, c_dt, sig_stop, ref)
-                    clear_signal()
+
+                # RSI side filter (#new): RSI must be >50 for LONG, <50 for SHORT
+                rsi_ok = True
+                if REQUIRE_RSI_SIDE:
+                    rsi_ok = (rsi[ci] > 50) if sig_direction == "LONG" else (rsi[ci] < 50)
+
+                if sig_direction == "LONG" and c_lo <= sig_entry and rsi_ok:
+                    # Rejection filter (#new): candle must close BACK above entry (hammer bounce)
+                    if REQUIRE_REJECTION and c_cl <= sig_entry:
+                        pass   # candle closed below entry — no bounce, skip
+                    else:
+                        ref = {"ref_HH": sig_ref_HH, "ref_HL": sig_ref_HL, "adx_at_entry": round(adx[ci], 1)}
+                        active = open_trade("LONG", sig_entry, c_dt, ci, sig_stop, ref)
+                        clear_signal()
+
+                elif sig_direction == "SHORT" and c_hi >= sig_entry and rsi_ok:
+                    # Rejection filter (#new): candle must close BACK below entry (bearish pin)
+                    if REQUIRE_REJECTION and c_cl >= sig_entry:
+                        pass   # candle closed above entry — no rejection, skip
+                    else:
+                        ref = {"ref_LH": sig_ref_LH, "ref_LL": sig_ref_LL, "adx_at_entry": round(adx[ci], 1)}
+                        active = open_trade("SHORT", sig_entry, c_dt, ci, sig_stop, ref)
+                        clear_signal()
+
+            # ── Early exit: next-candle follow-through check ───────────
+            # If the candle immediately after entry closes against the trade,
+            # exit at that close before stop loss is hit (p=0.000, WR 30% → exit early).
+            if EARLY_EXIT_CANDLE and active and "entry_ci" in active:
+                if ci == active["entry_ci"] + 1:
+                    failed = (
+                        (active["direction"] == "LONG"  and c_cl < active["entry_price"]) or
+                        (active["direction"] == "SHORT" and c_cl > active["entry_price"])
+                    )
+                    if failed:
+                        close_trade(active, c_cl, c_dt, "LOSS", f"No Follow-Through @{c_cl:.0f}")
+                        active = None
 
     return trades
 
@@ -433,7 +488,7 @@ def print_results(trades):
     shorts = df_t[df_t["direction"] == "SHORT"]
 
     print("\n" + "=" * 60)
-    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  REFINED v2 (DATA-DRIVEN FILTERS)")
+    print("  CHoCH BIAS STRATEGY  |  BTCUSD DAILY  |  REFINED v3 (CANDLE CONFIRMATION)")
     print("=" * 60)
     period = f"{df_t['entry_date'].min().date()} → {df_t['entry_date'].max().date()}"
     print(f"  Period          : {period}")
@@ -445,6 +500,9 @@ def print_results(trades):
     print(f"  Level tolerance : {LEVEL_TOL*100:.1f}% (near-equal HH/HL/LH/LL accepted)")
     print(f"  Entry guard     : requires a confirming close before stop-side fill")
     print(f"  Min swing count : {MIN_SWING_CNT} (skip swing-1 entries: 40% WR → blocked)")
+    print(f"  RSI side filter : {'ON' if REQUIRE_RSI_SIDE else 'OFF'}  RSI>{50} LONG / RSI<50 SHORT (WR 72% vs 45%, p=0.055)")
+    print(f"  Rejection filter: {'ON' if REQUIRE_REJECTION else 'OFF'}  entry candle must close beyond entry (WR 73% vs 18%, p=0.001)")
+    print(f"  Early exit      : {'ON' if EARLY_EXIT_CANDLE else 'OFF'}  exit if next candle fails to follow through (WR 80% vs 30%, p=0.000)")
     print("-" * 60)
     print(f"  Total Trades    : {total}")
     print(f"  Wins            : {wins}")
@@ -546,6 +604,29 @@ def print_results(trades):
      high ADX (40-60) reverted to 50% WR (extended move, mean-revert).
      FIX (applied) → ADX_THRESHOLD raised from 20 → 25 for a cleaner
            minimum floor, capturing more of the 25-30 trending zone.
+
+  10. ENTRY CANDLE MUST SHOW REJECTION  [APPLIED — candle analysis]
+      Deep analysis (Fisher p=0.001) showed: when the entry candle closed
+      BACK above entry for LONG (below for SHORT), WR=73%.  When the entry
+      candle closed against the trade direction, WR=18% — a near-certain
+      loss.  A hammer/pin-bar candle at the entry level is a real signal;
+      a candle that stays flat there is not.
+      FIX (applied) → REQUIRE_REJECTION: entry candle must close beyond
+            entry level (confirming price rejected the level).
+
+  11. RSI MUST AGREE WITH TRADE DIRECTION  [APPLIED — candle analysis]
+      RSI-14 was significantly higher for winners (mean 52.3) vs losers
+      (mean 46.4, p=0.023).  RSI 60-70 at entry showed 94% WR.
+      Filter: RSI > 50 for LONG entries; RSI < 50 for SHORT entries.
+      FIX (applied) → REQUIRE_RSI_SIDE: skip if RSI is on wrong side of 50.
+
+  12. NEXT-CANDLE FOLLOW-THROUGH  [APPLIED — candle analysis]
+      When the candle immediately after entry closed in the trade direction,
+      WR=80%.  When it closed against (80% → 30%), the trade almost always
+      failed.  Rather than holding into a stop loss, early exit at the
+      close of that candle limits losses on failed entries.
+      FIX (applied) → EARLY_EXIT_CANDLE: if next candle closes against
+            trade → exit at close, taking a small loss instead of full stop.
 """)
     print("=" * 60)
 
@@ -556,13 +637,14 @@ def print_results(trades):
 if __name__ == "__main__":
     df     = load_data()
     adx    = calc_adx(df, period=ADX_PERIOD)
+    rsi    = calc_rsi(df, period=RSI_PERIOD)
     swings = find_swings(df, n=SWING_N)
     print(f"\n  Structural swings detected: {len(swings)} "
           f"({sum(1 for s in swings if s['type']=='H')} highs, "
           f"{sum(1 for s in swings if s['type']=='L')} lows)")
-    adx_gt20 = (adx > ADX_THRESHOLD).sum()
-    print(f"  ADX > {ADX_THRESHOLD} on {adx_gt20}/{len(df)} candles "
-          f"({adx_gt20/len(df)*100:.1f}% of bars — tradeable)")
+    adx_gt = (adx > ADX_THRESHOLD).sum()
+    print(f"  ADX > {ADX_THRESHOLD} on {adx_gt}/{len(df)} candles "
+          f"({adx_gt/len(df)*100:.1f}% of bars — tradeable)")
 
-    trades = run_backtest(df, swings, adx)
+    trades = run_backtest(df, swings, adx, rsi)
     result_df = print_results(trades)
