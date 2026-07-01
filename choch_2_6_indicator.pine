@@ -598,10 +598,8 @@ if IN_TRADE
 // ══════════════════════════════════════════════════════════════════
 
 // — Bias background —
-if i_bg_v
-    _bg = BIAS == "UPTREND"   ? color.new(color.teal, 93) :
-          BIAS == "DOWNTREND" ? color.new(color.red,  93) : na
-    bgcolor(_bg)
+bgcolor(i_bg_v ? (BIAS == "UPTREND"   ? color.new(color.teal, 93) :
+                  BIAS == "DOWNTREND" ? color.new(color.red,  93) : na) : na)
 
 // — Swing Labels —
 if i_sw_lbl and is_ph
@@ -671,8 +669,7 @@ if i_entry_v and (entry_long or entry_short)
               size=size.small)
 
 // — Bar colouring while in trade —
-if i_bar_col and IN_TRADE
-    barcolor(TR_DIR == "LONG" ? color.new(color.teal, 45) : color.new(color.red, 45))
+barcolor(i_bar_col and IN_TRADE ? (TR_DIR == "LONG" ? color.new(color.teal, 45) : color.new(color.red, 45)) : na)
 
 // ══════════════════════════════════════════════════════════════════
 //  §18  D A S H B O A R D

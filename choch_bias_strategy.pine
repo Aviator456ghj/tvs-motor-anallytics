@@ -570,8 +570,7 @@ if entry_long
     BE_MOVED    := false
     TP1_HIT     := false
     IN_TRADE    := true
-    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate
-    avoids same-bar TP1 race
+    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate; avoids same-bar TP1 race
     strategy.entry("Long", strategy.long, comment="▲ CHoCH " + str.tostring(i_fib_entry))
     strategy.exit("Long TP1", from_entry="Long",
                   qty_percent=34,  limit=SIG_TP1, comment_profit="✔ TP1 1.618")
@@ -591,8 +590,7 @@ if entry_short
     BE_MOVED    := false
     TP1_HIT     := false
     IN_TRADE    := true
-    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate
-    avoids same-bar TP1 race
+    ENTRY_SIZE  := strategy.equity / SIG_ENTRY   // pre-fill estimate; avoids same-bar TP1 race
     strategy.entry("Short", strategy.short, comment="▼ CHoCH " + str.tostring(i_fib_entry))
     strategy.exit("Short TP1", from_entry="Short",
                   qty_percent=34,  limit=SIG_TP1, comment_profit="✔ TP1 1.618")
@@ -663,9 +661,8 @@ if choch_up and strategy.position_size < 0
 // ══════════════════════════════════════════════════════════════════
 //  §20  VISUALS
 // ══════════════════════════════════════════════════════════════════
-if i_bg_v
-    bgcolor(BIAS == "UPTREND"   ? color.new(color.teal,93) :
-            BIAS == "DOWNTREND" ? color.new(color.red, 93) : na, title="Bias Background")
+bgcolor(i_bg_v ? (BIAS == "UPTREND"   ? color.new(color.teal,93) :
+                  BIAS == "DOWNTREND" ? color.new(color.red, 93) : na) : na, title="Bias Background")
 
 if i_sw_lbl and is_ph
     _hh  = not na(HH_p) and ph_raw >= HH_p * (1.0 - i_tol)
@@ -724,8 +721,7 @@ else if not IN_TRADE and not na(BE_LINE)
     line.delete(BE_LINE)
     BE_LINE := na
 
-if i_bar_col and IN_TRADE
-    barcolor(TR_DIR == "LONG" ? color.new(color.teal,45) : color.new(color.red,45))
+barcolor(i_bar_col and IN_TRADE ? (TR_DIR == "LONG" ? color.new(color.teal,45) : color.new(color.red,45)) : na)
 
 // ══════════════════════════════════════════════════════════════════
 //  §21  DASHBOARD
