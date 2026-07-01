@@ -1,4 +1,11 @@
 //@version=5
+// HOW TO LOAD (avoids CE10243 error):
+// 1. Open Pine Editor in TradingView
+// 2. Click dropdown next to "Open" -> "New script"
+// 3. Press Ctrl+A (select all) then Delete
+// 4. Paste this entire file
+// 5. Click "Add to chart"
+//
 // ═══════════════════════════════════════════════════════════════════════════
 // BREAKOUT-CONTINUATION v1 | Swing-Point Stop, Origin SL, 100% Measured-Move
 // Strategy #3 from the BC backtest series.

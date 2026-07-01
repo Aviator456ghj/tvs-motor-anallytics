@@ -1,4 +1,11 @@
 //@version=5
+// HOW TO LOAD (avoids CE10243 error):
+// 1. Open Pine Editor in TradingView
+// 2. Click dropdown next to "Open" -> "New script"
+// 3. Press Ctrl+A (select all) then Delete
+// 4. Paste this entire file
+// 5. Click "Add to chart"
+//
 // ═══════════════════════════════════════════════════════════════════════════
 // BREAKOUT-CONTINUATION v2 | Close-Confirmed, 61.8% SL, 161.8% TP Extension
 // Strategy #4 — the only variant across 16 tried that is net-positive in
