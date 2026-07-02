@@ -22,11 +22,18 @@ touch real money unless you explicitly enable live mode.
 >   (~1 trade/week/symbol; 35 trades total), so the edge is not
 >   statistically settled.
 >
+> - **fib** (0.618-retracement entry, 1.618-extension target, EMA200 trend
+>   filter): **BTCUSD +19.2% over 180 days (PF 1.27, 156 trades), positive
+>   in both walk-forward phases**; ETHUSD roughly breakeven. The biggest
+>   sample in the repo, but a 32% win rate means long losing streaks are
+>   normal — the payoff comes from ~4:1 reward:risk.
+>
 > **No strategy wins every trade.** Scalping crypto after fees is brutally
 > hard; treat this as a research platform with good risk hygiene, not a
 > money printer. Full numbers:
-> [`reports/performance_report.md`](reports/performance_report.md) and
-> [`reports/market_structure_report.md`](reports/market_structure_report.md).
+> [`reports/performance_report.md`](reports/performance_report.md),
+> [`reports/market_structure_report.md`](reports/market_structure_report.md)
+> and [`reports/fib_report.md`](reports/fib_report.md).
 
 ## What it does
 
@@ -89,6 +96,22 @@ repo — positive on both symbols in a small sample. Paper-trade it first:
 
 ```bash
 DELTA_STRATEGY=structure DELTA_SYMBOLS=ETHUSD python run_bot.py
+```
+
+## Third strategy: Fibonacci retracement/extension ("the 2.618 idea", tested)
+
+`DELTA_STRATEGY=fib` trades the classic fib road-map — impulse A→B,
+pullback to a retracement, extension target — after testing what the
+ratios actually deliver ([`reports/fib_report.md`](reports/fib_report.md)):
+the 0.618 retracement is a good central estimate of pullback depth, but
+**2.618 is not a prediction** — price reaches it in only ~25% of
+continuations, and 56% of pullbacks fail outright. The validated rules:
+limit entry at the 0.618 retracement of a 2h swing leg, stop just beyond
+the leg origin, take-profit at the **1.618** extension (which beat 2.618
+in the grid), EMA200 trend filter.
+
+```bash
+DELTA_STRATEGY=fib DELTA_SYMBOLS=BTCUSD python run_bot.py
 ```
 
 ## Learning from losing trades (the journal)

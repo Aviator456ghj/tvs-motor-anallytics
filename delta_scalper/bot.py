@@ -19,6 +19,7 @@ from .config import Config
 from .delta_client import DeltaClient
 from .paper import PaperBroker
 from .risk import RiskManager
+from .fib import FibRetracementStrategy
 from .strategy import TrendPullbackStrategy
 from .structure import MarketStructureStrategy
 
@@ -27,6 +28,7 @@ log = logging.getLogger("delta.bot")
 STRATEGIES = {
     "pullback": TrendPullbackStrategy,
     "structure": MarketStructureStrategy,
+    "fib": FibRetracementStrategy,
 }
 
 
@@ -193,9 +195,10 @@ class ScalpingBot:
         log.info("starting scalping agent [%s] strategy=%s symbols=%s tf=%dm risk/trade=%.2f%%",
                  mode, cfg.strategy, cfg.symbols, cfg.timeframe_minutes,
                  cfg.risk_per_trade * 100)
-        if cfg.strategy == "structure":
-            log.warning("market-structure strategy had NEGATIVE backtest "
-                        "expectancy — use for paper research only")
+        if cfg.strategy in ("structure", "fib"):
+            log.warning("%s strategy: positive but small-sample backtest — "
+                        "validate in paper mode before any live size",
+                        cfg.strategy)
         last_bar_seen: dict[str, int] = {}
         while True:
             try:

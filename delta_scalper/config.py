@@ -27,10 +27,11 @@ class Config:
     timeframe_minutes: int = int(os.environ.get("DELTA_TIMEFRAME_MIN", "15"))
 
     # --- strategy selection ---
-    # "pullback"  (default): trend-pullback — the only one that validated
-    #                        positive out-of-sample on BTCUSD
-    # "structure":           HTF liquidity sweep + CHoCH (market structure);
-    #                        NEGATIVE expectancy in backtests — research only
+    # "pullback"  (default): trend-pullback baseline
+    # "structure":           confirmed liquidity sweep + order-block entry
+    #                        (best per-trade quality; very selective)
+    # "fib":                 0.618-retracement / 1.618-extension with trend
+    #                        filter (bigger sample; BTC-validated)
     strategy: str = os.environ.get("DELTA_STRATEGY", "pullback")
 
     # --- strategy (walk-forward selected; see backtests/README section in repo README) ---
@@ -61,6 +62,14 @@ class Config:
     ms_vol_ratio: float = 1.0      # sweep bar volume >= this x 20-bar average
     ms_min_stop_pct: float = 0.0045  # skip structures tighter than 0.45% (noise-stopped)
 
+    # --- fib strategy parameters (DELTA_STRATEGY=fib, 5m timeframe) ---
+    # walk-forward selected; note 1.618 beat 2.618 as the extension target
+    fib_swing_k: int = 24          # fractal half-width (24 x 5m = 2h swings)
+    fib_entry_r: float = 0.618     # limit entry at this retracement of A->B
+    fib_stop_r: float = 1.0        # stop just beyond A (full retracement = invalid)
+    fib_ext_r: float = 1.618       # take-profit extension from the fill
+    fib_wait_bars: int = 200       # cancel the unfilled retracement limit
+
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity
     max_leverage: float = float(os.environ.get("DELTA_MAX_LEVERAGE", "3"))
@@ -80,8 +89,9 @@ class Config:
     log_file: str = os.environ.get("DELTA_LOG_FILE", "scalper.log")
 
     def __post_init__(self):
-        # the structure strategy validated best on 5m; honor an explicit override
-        if self.strategy == "structure" and "DELTA_TIMEFRAME_MIN" not in os.environ:
+        # structure and fib validated on 5m; honor an explicit override
+        if self.strategy in ("structure", "fib") and \
+                "DELTA_TIMEFRAME_MIN" not in os.environ:
             self.timeframe_minutes = 5
 
     @property
