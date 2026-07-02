@@ -26,6 +26,13 @@ class Config:
     symbols: tuple = tuple(os.environ.get("DELTA_SYMBOLS", "BTCUSD").split(","))
     timeframe_minutes: int = int(os.environ.get("DELTA_TIMEFRAME_MIN", "15"))
 
+    # --- strategy selection ---
+    # "pullback"  (default): trend-pullback — the only one that validated
+    #                        positive out-of-sample on BTCUSD
+    # "structure":           HTF liquidity sweep + CHoCH (market structure);
+    #                        NEGATIVE expectancy in backtests — research only
+    strategy: str = os.environ.get("DELTA_STRATEGY", "pullback")
+
     # --- strategy (walk-forward selected; see backtests/README section in repo README) ---
     ema_fast: int = 20
     ema_slow: int = 50
@@ -38,6 +45,13 @@ class Config:
     tp_r_multiple: float = 2.5     # take-profit at 2.5x the stop distance (2.5R)
     max_hold_bars: int = 32        # time-based exit (32 x 15m = 8h)
     min_move_cost_ratio: float = 3.0  # SL distance must be >= this x round-trip cost
+
+    # --- market-structure strategy parameters (DELTA_STRATEGY=structure) ---
+    ms_htf_minutes: int = 60       # higher timeframe holding the liquidity levels
+    ms_swing_k: int = 3            # fractal half-width for HTF swings
+    ms_micro_bars: int = 3         # lookback for the CHoCH trigger level
+    ms_confirm_bars: int = 6       # bars allowed between sweep and confirmation
+    ms_r_multiple: float = 2.0     # take-profit in R
 
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity

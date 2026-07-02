@@ -51,6 +51,25 @@ No credentials needed for paper mode. State persists in
 `scalper_state_paper.json`, logs in `scalper.log`. Leave it running 24/7
 (e.g. under `tmux`, `systemd`, or Docker).
 
+## Alternative strategy: market-structure entries (research)
+
+A second strategy implements the classic "smart money" scalp with exact,
+mechanical entry/exit points: a 1h swing low/high gets **swept** by a wick
+that closes back inside (a stop-hunt), a **change of character** close
+confirms the reversal, entry is the next bar, the stop sits at the sweep
+extreme (the exact invalidation price) and the target at 2R.
+
+It was backtested head-to-head against the baseline
+([`reports/market_structure_report.md`](reports/market_structure_report.md)):
+**every configuration lost money after fees** — sweep+CHoCH, BOS-retest,
+swing widths 3/5/8, 5m/15m timeframes, 1h/4h liquidity levels, 2R/3R and
+liquidity targets. Precise-looking entries are not the same thing as edge.
+It stays available for paper-mode experiments:
+
+```bash
+DELTA_STRATEGY=structure python run_bot.py
+```
+
 ## Reproduce the backtest / performance report
 
 ```bash

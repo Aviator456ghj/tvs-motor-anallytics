@@ -20,8 +20,14 @@ from .delta_client import DeltaClient
 from .paper import PaperBroker
 from .risk import RiskManager
 from .strategy import TrendPullbackStrategy
+from .structure import MarketStructureStrategy
 
 log = logging.getLogger("delta.bot")
+
+STRATEGIES = {
+    "pullback": TrendPullbackStrategy,
+    "structure": MarketStructureStrategy,
+}
 
 
 class ScalpingBot:
@@ -29,7 +35,10 @@ class ScalpingBot:
         cfg.validate()
         self.cfg = cfg
         self.client = DeltaClient(cfg.base_url, cfg.api_key, cfg.api_secret)
-        self.strategy = TrendPullbackStrategy(cfg)
+        if cfg.strategy not in STRATEGIES:
+            raise SystemExit(f"unknown DELTA_STRATEGY={cfg.strategy!r}; "
+                             f"choose from {sorted(STRATEGIES)}")
+        self.strategy = STRATEGIES[cfg.strategy](cfg)
         self.risk = RiskManager(cfg)
         self.paper = PaperBroker(cfg) if not cfg.live else None
         self.products = {}
@@ -154,8 +163,12 @@ class ScalpingBot:
     def run_forever(self):
         cfg = self.cfg
         mode = "LIVE" if cfg.live else "PAPER"
-        log.info("starting scalping agent [%s] symbols=%s tf=%dm risk/trade=%.2f%%",
-                 mode, cfg.symbols, cfg.timeframe_minutes, cfg.risk_per_trade * 100)
+        log.info("starting scalping agent [%s] strategy=%s symbols=%s tf=%dm risk/trade=%.2f%%",
+                 mode, cfg.strategy, cfg.symbols, cfg.timeframe_minutes,
+                 cfg.risk_per_trade * 100)
+        if cfg.strategy == "structure":
+            log.warning("market-structure strategy had NEGATIVE backtest "
+                        "expectancy — use for paper research only")
         last_bar_seen: dict[str, int] = {}
         while True:
             try:
