@@ -93,6 +93,10 @@ def run_fib(df, cfg, eq0=1000.0):
             if (h[j] > B if d == 1 else l[j] < B):
                 break  # ran away without the pullback
             if (l[j] <= limit if d == 1 else h[j] >= limit):
+                # failure filter: a crash into the zone within the first
+                # fib_min_pull_bars is impulsive -> setup void
+                if j - start < cfg.fib_min_pull_bars:
+                    break
                 fill = j
                 break
         if fill is None:
@@ -248,6 +252,17 @@ def main():
         "just beyond the leg origin, target the **1.618 extension** from the",
         "fill, EMA200 trend filter. Note: **1.618 beat 2.618 as a target** —",
         "the bigger extension simply doesn't happen often enough.",
+        "",
+        "### Post-mortem refinement (what raised the win rate)",
+        "",
+        "A feature post-mortem on 207 in-sample trades found the dominant",
+        "failure pattern: **pullbacks that crashed into the 0.618 zone within",
+        "an hour won only 23% of the time vs 36-43% for slower, corrective",
+        "pullbacks** — a fast drop to the level means momentum has flipped.",
+        "The validated fix (`fib_min_pull_bars`): void any setup whose zone is",
+        "touched within the first 12 bars. Also tested and REJECTED (failed",
+        "out-of-sample or collapsed the sample): rejection-candle entry",
+        "confirmation, scale-out exits, leg-size and RSI filters.",
         "",
         rep.to_markdown(index=False),
         "",

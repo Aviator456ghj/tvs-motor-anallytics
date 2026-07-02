@@ -23,10 +23,11 @@ touch real money unless you explicitly enable live mode.
 >   statistically settled.
 >
 > - **fib** (0.618-retracement entry, 1.618-extension target, EMA200 trend
->   filter): **BTCUSD +19.2% over 180 days (PF 1.27, 156 trades), positive
->   in both walk-forward phases**; ETHUSD roughly breakeven. The biggest
->   sample in the repo, but a 32% win rate means long losing streaks are
->   normal — the payoff comes from ~4:1 reward:risk.
+>   filter, slow-pullback filter): **BTCUSD +11.8% and ETHUSD +10.1% over
+>   180 days (PF 1.32 / 1.28, ~90 trades each)** — BTC's profit factor is
+>   identical in-sample and out-of-sample (1.32/1.32). A ~35% win rate is
+>   by design: the payoff comes from ~4:1 reward:risk, so losing streaks
+>   are normal.
 >
 > **No strategy wins every trade.** Scalping crypto after fees is brutally
 > hard; treat this as a research platform with good risk hygiene, not a
@@ -108,7 +109,11 @@ the 0.618 retracement is a good central estimate of pullback depth, but
 continuations, and 56% of pullbacks fail outright. The validated rules:
 limit entry at the 0.618 retracement of a 2h swing leg, stop just beyond
 the leg origin, take-profit at the **1.618** extension (which beat 2.618
-in the grid), EMA200 trend filter.
+in the grid), EMA200 trend filter, and a post-mortem-derived rule: the
+pullback must take **more than an hour** to reach the zone (fast crashes
+into the level won only 23% vs ~37% for corrective pullbacks). Also tested
+and rejected because they failed out-of-sample: rejection-candle entry
+confirmation, scale-out exits, leg-size and RSI filters.
 
 ```bash
 DELTA_STRATEGY=fib DELTA_SYMBOLS=BTCUSD python run_bot.py

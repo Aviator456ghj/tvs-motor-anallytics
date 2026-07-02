@@ -69,6 +69,10 @@ class Config:
     fib_stop_r: float = 1.0        # stop just beyond A (full retracement = invalid)
     fib_ext_r: float = 1.618       # take-profit extension from the fill
     fib_wait_bars: int = 200       # cancel the unfilled retracement limit
+    # failure filter (validated in+out of sample): a pullback that crashes
+    # into the zone within an hour is impulsive, not corrective — fills in
+    # the first 12 bars had a 23% win rate vs 36-43% for slower pullbacks
+    fib_min_pull_bars: int = 12
 
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity

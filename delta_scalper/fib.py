@@ -78,9 +78,12 @@ class FibRetracementStrategy:
         trend = ema(df["close"], 200).values
         close = float(df["close"].iloc[-1])
 
+        h, l = df["high"].values, df["low"].values
         for leg in fractal_legs(df, c.fib_swing_k):
-            if leg["conf_bar"] != last:
-                continue  # act only on a leg confirmed by the just-closed bar
+            # act `fib_min_pull_bars` after confirmation: fast crashes into
+            # the zone are impulsive, not corrective (23% vs ~37% win rate)
+            if leg["conf_bar"] != last - c.fib_min_pull_bars:
+                continue
             A, B, d = leg["a"], leg["b"], leg["dir"]
             rng = abs(B - A)
             if rng <= 0:
@@ -89,6 +92,15 @@ class FibRetracementStrategy:
                 continue  # 56% of legs fail; only trade with the trend
             limit = B - d * c.fib_entry_r * rng
             stop = B - d * c.fib_stop_r * rng
+            # void if the waiting window already touched the zone or ran
+            # beyond B — the setup we validated no longer exists
+            window = range(leg["conf_bar"] + 1, last + 1)
+            touched = any(l[j] <= limit for j in window) if d == 1 else \
+                any(h[j] >= limit for j in window)
+            beyond = any(h[j] > B for j in window) if d == 1 else \
+                any(l[j] < B for j in window)
+            if touched or beyond:
+                continue
             stop_d = abs(limit - stop)
             if stop_d / limit < c.min_move_cost_ratio * c.round_trip_cost:
                 continue
