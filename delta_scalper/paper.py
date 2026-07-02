@@ -1,0 +1,117 @@
+"""Paper-trading broker: simulates fills against live market prices so the
+agent can run 24/7 with zero financial risk. This is the default mode."""
+import json
+import logging
+import os
+import time
+from dataclasses import asdict, dataclass, field
+
+from .config import Config
+
+log = logging.getLogger("delta.paper")
+
+
+@dataclass
+class PaperPosition:
+    symbol: str
+    side: str            # "buy" | "sell"
+    notional: float
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    opened_at: float
+    expires_at: float    # time-based exit
+
+
+@dataclass
+class PaperAccount:
+    equity: float
+    position: dict | None = None
+    trades: list = field(default_factory=list)
+
+
+class PaperBroker:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.path = cfg.state_file.replace(".json", "_paper.json")
+        self.account = PaperAccount(equity=cfg.paper_start_equity)
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self.path):
+            try:
+                with open(self.path) as f:
+                    data = json.load(f)
+                self.account = PaperAccount(**data)
+            except (json.JSONDecodeError, TypeError, OSError) as e:
+                log.warning("could not load paper state: %s", e)
+
+    def _save(self):
+        with open(self.path, "w") as f:
+            json.dump(asdict(self.account), f, indent=2)
+
+    @property
+    def equity(self) -> float:
+        return self.account.equity
+
+    @property
+    def position(self) -> PaperPosition | None:
+        return PaperPosition(**self.account.position) if self.account.position else None
+
+    def open_position(self, symbol: str, side: str, notional: float, price: float,
+                      stop_loss: float, take_profit: float, max_hold_seconds: float):
+        slip = 1 + self.cfg.slippage * (1 if side == "buy" else -1)
+        entry = price * slip
+        now = time.time()
+        self.account.position = asdict(PaperPosition(
+            symbol=symbol, side=side, notional=notional, entry_price=entry,
+            stop_loss=stop_loss, take_profit=take_profit,
+            opened_at=now, expires_at=now + max_hold_seconds,
+        ))
+        # entry fee (assume maker)
+        self.account.equity -= notional * self.cfg.maker_fee
+        self._save()
+        log.info("[PAPER] opened %s %s notional=%.2f @ %.2f sl=%.2f tp=%.2f",
+                 side, symbol, notional, entry, stop_loss, take_profit)
+
+    def check_exit(self, last_price: float, high: float | None = None,
+                   low: float | None = None) -> float | None:
+        """Returns realized pnl if the position closed, else None."""
+        pos = self.position
+        if pos is None:
+            return None
+        hi = high if high is not None else last_price
+        lo = low if low is not None else last_price
+        exit_price = None
+        reason = ""
+        if pos.side == "buy":
+            if lo <= pos.stop_loss:
+                exit_price, reason = pos.stop_loss, "stop-loss"
+            elif hi >= pos.take_profit:
+                exit_price, reason = pos.take_profit, "take-profit"
+        else:
+            if hi >= pos.stop_loss:
+                exit_price, reason = pos.stop_loss, "stop-loss"
+            elif lo <= pos.take_profit:
+                exit_price, reason = pos.take_profit, "take-profit"
+        if exit_price is None and time.time() >= pos.expires_at:
+            exit_price, reason = last_price, "time-exit"
+        if exit_price is None:
+            return None
+        direction = 1 if pos.side == "buy" else -1
+        slip = 1 - self.cfg.slippage * direction
+        exit_eff = exit_price * slip
+        gross = pos.notional * direction * (exit_eff - pos.entry_price) / pos.entry_price
+        fee = pos.notional * self.cfg.taker_fee
+        pnl = gross - fee
+        self.account.equity += pnl
+        self.account.trades.append({
+            "symbol": pos.symbol, "side": pos.side, "entry": pos.entry_price,
+            "exit": exit_eff, "notional": pos.notional, "pnl": pnl,
+            "reason": reason, "closed_at": time.time(),
+        })
+        self.account.position = None
+        self._save()
+        log.info("[PAPER] closed %s via %s pnl=%.4f equity=%.2f",
+                 pos.symbol, reason, pnl, self.account.equity)
+        return pnl
