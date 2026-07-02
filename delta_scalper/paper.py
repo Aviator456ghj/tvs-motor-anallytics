@@ -27,6 +27,7 @@ class PaperPosition:
 class PaperAccount:
     equity: float
     position: dict | None = None
+    pending: dict | None = None   # resting limit order awaiting a retest fill
     trades: list = field(default_factory=list)
 
 
@@ -58,9 +59,45 @@ class PaperBroker:
     def position(self) -> PaperPosition | None:
         return PaperPosition(**self.account.position) if self.account.position else None
 
+    def place_limit(self, symbol: str, side: str, notional: float, limit: float,
+                    stop_loss: float, take_profit: float, expiry_seconds: float,
+                    max_hold_seconds: float):
+        """Rest a limit order that fills only when price trades to it."""
+        self.account.pending = {
+            "symbol": symbol, "side": side, "notional": notional, "limit": limit,
+            "stop_loss": stop_loss, "take_profit": take_profit,
+            "expires_at": time.time() + expiry_seconds,
+            "max_hold_seconds": max_hold_seconds,
+        }
+        self._save()
+        log.info("[PAPER] resting %s limit %s notional=%.2f @ %.2f",
+                 side, symbol, notional, limit)
+
+    def check_pending(self, last_price: float):
+        """Fill, expire, or keep the resting limit order."""
+        p = self.account.pending
+        if p is None:
+            return
+        if time.time() >= p["expires_at"]:
+            self.account.pending = None
+            self._save()
+            log.info("[PAPER] limit on %s expired unfilled", p["symbol"])
+            return
+        touched = (p["side"] == "buy" and last_price <= p["limit"]) or \
+                  (p["side"] == "sell" and last_price >= p["limit"])
+        if touched:
+            self.account.pending = None
+            self.open_position(
+                p["symbol"], p["side"], p["notional"], p["limit"],
+                p["stop_loss"], p["take_profit"], p["max_hold_seconds"],
+                is_limit=True,
+            )
+
     def open_position(self, symbol: str, side: str, notional: float, price: float,
-                      stop_loss: float, take_profit: float, max_hold_seconds: float):
-        slip = 1 + self.cfg.slippage * (1 if side == "buy" else -1)
+                      stop_loss: float, take_profit: float, max_hold_seconds: float,
+                      is_limit: bool = False):
+        # maker fills happen exactly at the limit price; market entries slip
+        slip = 1.0 if is_limit else 1 + self.cfg.slippage * (1 if side == "buy" else -1)
         entry = price * slip
         now = time.time()
         self.account.position = asdict(PaperPosition(

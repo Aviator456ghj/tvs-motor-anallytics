@@ -47,11 +47,14 @@ class Config:
     min_move_cost_ratio: float = 3.0  # SL distance must be >= this x round-trip cost
 
     # --- market-structure strategy parameters (DELTA_STRATEGY=structure) ---
+    # best on a 5m trading timeframe (set DELTA_TIMEFRAME_MIN=5)
     ms_htf_minutes: int = 60       # higher timeframe holding the liquidity levels
     ms_swing_k: int = 3            # fractal half-width for HTF swings
     ms_micro_bars: int = 3         # lookback for the CHoCH trigger level
     ms_confirm_bars: int = 6       # bars allowed between sweep and confirmation
     ms_r_multiple: float = 2.0     # take-profit in R
+    ms_wick_frac: float = 0.5      # fakeout filter: wick beyond level >= 50% of bar range
+    ms_wait_bars: int = 12         # cancel the order-block limit if unfilled
 
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity
@@ -70,6 +73,11 @@ class Config:
     paper_start_equity: float = float(os.environ.get("DELTA_PAPER_EQUITY", "1000"))
     state_file: str = os.environ.get("DELTA_STATE_FILE", "scalper_state.json")
     log_file: str = os.environ.get("DELTA_LOG_FILE", "scalper.log")
+
+    def __post_init__(self):
+        # the structure strategy validated best on 5m; honor an explicit override
+        if self.strategy == "structure" and "DELTA_TIMEFRAME_MIN" not in os.environ:
+            self.timeframe_minutes = 5
 
     @property
     def round_trip_cost(self) -> float:

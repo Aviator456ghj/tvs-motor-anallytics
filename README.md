@@ -8,15 +8,24 @@ touch real money unless you explicitly enable live mode.
 
 > ## ⚠️ Read this first — an honest note about profitability
 >
-> This agent was built and validated on 60 days of real Delta Exchange data
-> with realistic fees and slippage. The result: **the edge is small and
-> unstable**. BTCUSD was mildly profitable both in-sample (+2.4%, profit
-> factor 1.17) and out-of-sample (+0.4%, PF 1.04); ETHUSD lost money and is
-> disabled by default. **No strategy wins every trade** — this one wins
-> ~40% of trades and relies on winners being ~2.5x bigger than losers.
-> Scalping crypto after fees is brutally hard; treat this as a research
-> platform with good risk hygiene, not a money printer.
-> Full numbers: [`reports/performance_report.md`](reports/performance_report.md).
+> Every strategy here was validated on real Delta Exchange data with
+> realistic fees and slippage, using walk-forward (in-sample /
+> out-of-sample) splits. The headline results:
+>
+> - **trend-pullback** (default): mildly positive on BTCUSD over the last
+>   60 days, but **negative over the full 180 days** — its edge is
+>   window-dependent.
+> - **structure** (confirmed liquidity sweep + order-block entry): the
+>   only strategy with a positive 180-day equity curve — **ETHUSD +4.9%,
+>   52% win rate, profit factor 1.42, positive in BOTH walk-forward
+>   phases** — but it trades rarely (~1 trade / 4 days) and the sample is
+>   only ~42 trades, so the edge is not statistically settled.
+>
+> **No strategy wins every trade.** Scalping crypto after fees is brutally
+> hard; treat this as a research platform with good risk hygiene, not a
+> money printer. Full numbers:
+> [`reports/performance_report.md`](reports/performance_report.md) and
+> [`reports/market_structure_report.md`](reports/market_structure_report.md).
 
 ## What it does
 
@@ -51,23 +60,31 @@ No credentials needed for paper mode. State persists in
 `scalper_state_paper.json`, logs in `scalper.log`. Leave it running 24/7
 (e.g. under `tmux`, `systemd`, or Docker).
 
-## Alternative strategy: market-structure entries (research)
+## Alternative strategy: confirmed market-structure entries
 
-A second strategy implements the classic "smart money" scalp with exact,
-mechanical entry/exit points: a 1h swing low/high gets **swept** by a wick
-that closes back inside (a stop-hunt), a **change of character** close
-confirms the reversal, entry is the next bar, the stop sits at the sweep
-extreme (the exact invalidation price) and the target at 2R.
+`DELTA_STRATEGY=structure` trades the classic "smart money" scalp with
+exact, mechanical entry/exit points and a confirmation stack:
 
-It was backtested head-to-head against the baseline
+1. a 1h swing low/high gets **swept** by a wick that closes back inside
+   (a stop-hunt / liquidity grab);
+2. **fakeout quality**: the wick beyond the level must be ≥ 50% of the
+   sweep bar's range — a real rejection, not a graze;
+3. a **change-of-character** close beyond the sweep bar's local extreme
+   confirms the reversal;
+4. entry is a **limit order at the order block** (the sweep bar's body
+   edge) — filled only on a retest, which means a better price, maker
+   fees, and a tighter stop;
+5. stop at the sweep extreme (the exact invalidation price), target 2R,
+   the unfilled limit cancels after 12 bars.
+
+Head-to-head backtest over 180 days
 ([`reports/market_structure_report.md`](reports/market_structure_report.md)):
-**every configuration lost money after fees** — sweep+CHoCH, BOS-retest,
-swing widths 3/5/8, 5m/15m timeframes, 1h/4h liquidity levels, 2R/3R and
-liquidity targets. Precise-looking entries are not the same thing as edge.
-It stays available for paper-mode experiments:
+the raw sweep entry and BOS-retest lose after fees, but the confirmed
+order-block version is the best performer in the repo — positive on ETHUSD
+in both walk-forward phases. Small sample; paper-trade it first:
 
 ```bash
-DELTA_STRATEGY=structure python run_bot.py
+DELTA_STRATEGY=structure DELTA_SYMBOLS=ETHUSD python run_bot.py
 ```
 
 ## Reproduce the backtest / performance report

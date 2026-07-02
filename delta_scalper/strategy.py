@@ -21,10 +21,12 @@ from .indicators import atr, ema, rsi
 @dataclass
 class Signal:
     side: str          # "buy" | "sell"
-    entry_ref: float   # reference price (last close)
+    entry_ref: float   # reference price: last close (market) or limit level
     stop_loss: float
     take_profit: float
     atr_value: float
+    entry_type: str = "market"   # "market" | "limit" (wait for a retest fill)
+    expires_bars: int = 0        # cancel an unfilled limit after this many bars
 
 
 class TrendPullbackStrategy:

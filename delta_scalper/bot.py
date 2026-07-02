@@ -43,6 +43,7 @@ class ScalpingBot:
         self.paper = PaperBroker(cfg) if not cfg.live else None
         self.products = {}
         self.last_signal_bar: dict[str, int] = {}
+        self.live_entry_deadline: dict[str, float] = {}
 
     # ---------- data ----------
 
@@ -103,17 +104,29 @@ class ScalpingBot:
         if not decision.allowed:
             log.info("signal on %s skipped: %s", symbol, decision.reason)
             return
-        log.info("ENTRY signal %s %s ref=%.2f sl=%.2f tp=%.2f notional=%.2f",
-                 sig.side, symbol, sig.entry_ref, sig.stop_loss, sig.take_profit,
-                 decision.notional)
+        log.info("ENTRY signal %s %s %s ref=%.2f sl=%.2f tp=%.2f notional=%.2f",
+                 sig.side, sig.entry_type, symbol, sig.entry_ref, sig.stop_loss,
+                 sig.take_profit, decision.notional)
+        max_hold_s = self.cfg.max_hold_bars * self.cfg.timeframe_minutes * 60
         if self.paper:
-            self.paper.open_position(
-                symbol, sig.side, decision.notional, sig.entry_ref,
-                sig.stop_loss, sig.take_profit,
-                max_hold_seconds=self.cfg.max_hold_bars * self.cfg.timeframe_minutes * 60,
-            )
+            if sig.entry_type == "limit":
+                self.paper.place_limit(
+                    symbol, sig.side, decision.notional, sig.entry_ref,
+                    sig.stop_loss, sig.take_profit,
+                    expiry_seconds=sig.expires_bars * self.cfg.timeframe_minutes * 60,
+                    max_hold_seconds=max_hold_s,
+                )
+            else:
+                self.paper.open_position(
+                    symbol, sig.side, decision.notional, sig.entry_ref,
+                    sig.stop_loss, sig.take_profit, max_hold_seconds=max_hold_s,
+                )
         else:
             self._place_live(symbol, sig, decision.notional)
+            if sig.entry_type == "limit" and sig.expires_bars:
+                self.live_entry_deadline[symbol] = (
+                    time.time() + sig.expires_bars * self.cfg.timeframe_minutes * 60
+                )
 
     def _place_live(self, symbol: str, sig, notional: float):
         p = self.product(symbol)
@@ -141,12 +154,25 @@ class ScalpingBot:
         (SL/TP are bracket orders handled by the exchange)."""
         if self.paper:
             pos = self.paper.position
-            if pos and pos.symbol == symbol:
+            pending = self.paper.account.pending
+            involved = (pos and pos.symbol == symbol) or \
+                       (pending and pending["symbol"] == symbol)
+            if involved:
                 price = self.last_price(symbol)
+                self.paper.check_pending(price)
                 pnl = self.paper.check_exit(price)
                 if pnl is not None:
                     self.risk.record_trade(pnl)
         else:
+            # cancel a resting limit entry that outlived its validity window
+            deadline = self.live_entry_deadline.get(symbol)
+            if deadline and time.time() > deadline:
+                p = self.product(symbol)
+                for order in self.client.get_live_orders(p["id"]):
+                    self.client.cancel_order(p["id"], order["id"])
+                    log.info("canceled stale entry order %s on %s",
+                             order["id"], symbol)
+                del self.live_entry_deadline[symbol]
             p = self.product(symbol)
             positions = self.client.get_positions(p["id"])
             size = int(positions.get("size", 0) or 0)
@@ -174,8 +200,9 @@ class ScalpingBot:
             try:
                 for symbol in cfg.symbols:
                     self.manage_open(symbol)
-                    in_pos = bool(self.paper and self.paper.position)
-                    if in_pos:
+                    busy = bool(self.paper and (self.paper.position or
+                                                self.paper.account.pending))
+                    if busy:
                         continue
                     candles = self.fetch_closed_candles(symbol)
                     if candles.empty:
