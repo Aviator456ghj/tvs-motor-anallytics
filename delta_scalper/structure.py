@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
+from .indicators import atr, ema
 from .strategy import Signal
 
 
@@ -98,6 +99,10 @@ class MarketStructureStrategy:
         sh, sl = htf_swing_levels(df, c.ms_htf_minutes, c.ms_swing_k)
         o = df["open"].values
         h, l, cl = df["high"].values, df["low"].values, df["close"].values
+        v = df["volume"].values
+        vma = df["volume"].rolling(20).mean().values
+        atr_v = atr(df, c.atr_period).values
+        ema_slow = ema(df["close"], 200).values
         n = len(df)
         last = n - 1  # the just-closed bar must be the CHoCH confirmation
 
@@ -117,6 +122,12 @@ class MarketStructureStrategy:
             wick = (level - l[i]) if side == 1 else (h[i] - level)
             if c.ms_wick_frac > 0 and (rng <= 0 or wick / rng < c.ms_wick_frac):
                 continue
+            # failure filter F1: a real liquidity grab comes with volume —
+            # low-volume sweeps lost at a 29% win rate in the post-mortem
+            if c.ms_vol_ratio > 0 and (
+                np.isnan(vma[i]) or v[i] < c.ms_vol_ratio * vma[i]
+            ):
+                continue
             # invalidation or earlier confirmation between sweep and now
             violated = False
             for w in range(i + 1, last):
@@ -135,7 +146,11 @@ class MarketStructureStrategy:
             if side * (float(cl[last]) - ob) <= 0:
                 return None  # market already at/through the block
             stop_d = abs(ob - extreme)
-            if stop_d <= 0 or stop_d / ob < c.min_move_cost_ratio * c.round_trip_cost:
+            # failure filter F2: structures tighter than ~0.45% got
+            # noise-stopped (35% win rate in the post-mortem)
+            min_stop = max(c.min_move_cost_ratio * c.round_trip_cost,
+                           c.ms_min_stop_pct)
+            if stop_d <= 0 or stop_d / ob < min_stop:
                 return None
             return Signal(
                 side="buy" if side == 1 else "sell",
@@ -145,5 +160,17 @@ class MarketStructureStrategy:
                 atr_value=stop_d,
                 entry_type="limit",
                 expires_bars=c.ms_wait_bars,
+                context={
+                    "setup": "sweep_ob",
+                    "sweep_bar_time": int(df["time"].iloc[i]),
+                    "level": float(level),
+                    "wick_ratio": round(float(wick / rng), 3) if rng > 0 else None,
+                    "sweep_depth_atr": round(float(wick / atr_v[i]), 3)
+                    if atr_v[i] > 0 else None,
+                    "vol_ratio": round(float(v[i] / vma[i]), 2)
+                    if vma[i] and not np.isnan(vma[i]) else None,
+                    "trend_align": int(side * (cl[last] - ema_slow[last]) > 0),
+                    "stop_pct": round(float(stop_d / ob * 100), 3),
+                },
             )
         return None

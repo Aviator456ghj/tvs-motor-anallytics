@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict, dataclass, field
 
 from .config import Config
+from .journal import TradeJournal
 
 log = logging.getLogger("delta.paper")
 
@@ -21,6 +22,7 @@ class PaperPosition:
     take_profit: float
     opened_at: float
     expires_at: float    # time-based exit
+    context: dict | None = None  # setup features for the trade journal
 
 
 @dataclass
@@ -36,6 +38,7 @@ class PaperBroker:
         self.cfg = cfg
         self.path = cfg.state_file.replace(".json", "_paper.json")
         self.account = PaperAccount(equity=cfg.paper_start_equity)
+        self.journal = TradeJournal()
         self._load()
 
     def _load(self):
@@ -61,13 +64,14 @@ class PaperBroker:
 
     def place_limit(self, symbol: str, side: str, notional: float, limit: float,
                     stop_loss: float, take_profit: float, expiry_seconds: float,
-                    max_hold_seconds: float):
+                    max_hold_seconds: float, context: dict | None = None):
         """Rest a limit order that fills only when price trades to it."""
         self.account.pending = {
             "symbol": symbol, "side": side, "notional": notional, "limit": limit,
             "stop_loss": stop_loss, "take_profit": take_profit,
             "expires_at": time.time() + expiry_seconds,
             "max_hold_seconds": max_hold_seconds,
+            "context": context,
         }
         self._save()
         log.info("[PAPER] resting %s limit %s notional=%.2f @ %.2f",
@@ -90,12 +94,12 @@ class PaperBroker:
             self.open_position(
                 p["symbol"], p["side"], p["notional"], p["limit"],
                 p["stop_loss"], p["take_profit"], p["max_hold_seconds"],
-                is_limit=True,
+                is_limit=True, context=p.get("context"),
             )
 
     def open_position(self, symbol: str, side: str, notional: float, price: float,
                       stop_loss: float, take_profit: float, max_hold_seconds: float,
-                      is_limit: bool = False):
+                      is_limit: bool = False, context: dict | None = None):
         # maker fills happen exactly at the limit price; market entries slip
         slip = 1.0 if is_limit else 1 + self.cfg.slippage * (1 if side == "buy" else -1)
         entry = price * slip
@@ -104,6 +108,7 @@ class PaperBroker:
             symbol=symbol, side=side, notional=notional, entry_price=entry,
             stop_loss=stop_loss, take_profit=take_profit,
             opened_at=now, expires_at=now + max_hold_seconds,
+            context=context,
         ))
         # entry fee (assume maker)
         self.account.equity -= notional * self.cfg.maker_fee
@@ -146,6 +151,16 @@ class PaperBroker:
             "symbol": pos.symbol, "side": pos.side, "entry": pos.entry_price,
             "exit": exit_eff, "notional": pos.notional, "pnl": pnl,
             "reason": reason, "closed_at": time.time(),
+        })
+        stop_frac = abs(pos.entry_price - pos.stop_loss) / pos.entry_price
+        self.journal.record({
+            "closed_at": time.time(), "symbol": pos.symbol,
+            "strategy": self.cfg.strategy, "side": pos.side,
+            "entry": pos.entry_price, "exit": exit_eff,
+            "notional": pos.notional, "pnl": round(pnl, 4),
+            "r_outcome": round(pnl / max(pos.notional * stop_frac, 1e-9), 3),
+            "exit_reason": reason,
+            **(pos.context or {}),
         })
         self.account.position = None
         self._save()

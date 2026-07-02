@@ -114,12 +114,13 @@ class ScalpingBot:
                     symbol, sig.side, decision.notional, sig.entry_ref,
                     sig.stop_loss, sig.take_profit,
                     expiry_seconds=sig.expires_bars * self.cfg.timeframe_minutes * 60,
-                    max_hold_seconds=max_hold_s,
+                    max_hold_seconds=max_hold_s, context=sig.context,
                 )
             else:
                 self.paper.open_position(
                     symbol, sig.side, decision.notional, sig.entry_ref,
                     sig.stop_loss, sig.take_profit, max_hold_seconds=max_hold_s,
+                    context=sig.context,
                 )
         else:
             self._place_live(symbol, sig, decision.notional)

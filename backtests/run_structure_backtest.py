@@ -36,7 +36,7 @@ MAX_HOLD = 72  # 5m bars = 6h
 
 
 def run_sweep_choch(df, cfg, eq0=1000.0, entry="market", wick_frac=0.0,
-                    wait_bars=12):
+                    wait_bars=12, vol_ratio=0.0, min_stop_pct=0.0):
     """Event replay of the sweep+CHoCH setup.
 
     entry="market": taker entry at next bar open after confirmation.
@@ -44,6 +44,8 @@ def run_sweep_choch(df, cfg, eq0=1000.0, entry="market", wick_frac=0.0,
                     maker fill only on a retest — what structure.py trades.
     """
     o, h, l, c = df.open.values, df.high.values, df.low.values, df.close.values
+    v = df.volume.values
+    vma = df.volume.rolling(20).mean().values
     sh, sl_lv = htf_swing_levels(df, cfg.ms_htf_minutes, cfg.ms_swing_k)
     taker_cost = cfg.taker_fee * 2 + cfg.slippage * 2
     maker_cost = cfg.maker_fee + cfg.taker_fee + 2 * cfg.slippage
@@ -63,6 +65,9 @@ def run_sweep_choch(df, cfg, eq0=1000.0, entry="market", wick_frac=0.0,
         rng = h[i] - l[i]
         wick = (level - l[i]) if s == 1 else (h[i] - level)
         if wick_frac > 0 and (rng <= 0 or wick / rng < wick_frac):
+            i += 1
+            continue
+        if vol_ratio > 0 and (np.isnan(vma[i]) or v[i] < vol_ratio * vma[i]):
             i += 1
             continue
         conf = None
@@ -95,7 +100,8 @@ def run_sweep_choch(df, cfg, eq0=1000.0, entry="market", wick_frac=0.0,
             entry_px = limit
             cost = maker_cost
         stop_d = abs(entry_px - extreme)
-        if stop_d <= 0 or stop_d / entry_px < cfg.min_move_cost_ratio * cost:
+        min_stop = max(cfg.min_move_cost_ratio * cost, min_stop_pct)
+        if stop_d <= 0 or stop_d / entry_px < min_stop:
             i = conf + 1
             continue
         sl = extreme
@@ -186,7 +192,8 @@ def make_chart(curves: dict, start_equity: float, split_ts: int, path: str):
     GRID, BASE = "#e1e0d9", "#c3c2b7"
     COLORS = {"trend-pullback (baseline)": "#2a78d6",
               "sweep + CHoCH (market)": "#1baf7a",
-              "sweep confirmed + order block": "#eda100"}
+              "sweep confirmed + order block": "#eda100",
+              "sweep + OB + failure filters": "#008300"}
 
     syms = list(curves)
     fig, axes = plt.subplots(len(syms), 1, figsize=(10, 4.2 * len(syms)),
@@ -261,6 +268,10 @@ def main():
             "sweep confirmed + order block": lambda: run_sweep_choch(
                 df5, cfg, eq0, entry="ob", wick_frac=cfg.ms_wick_frac,
                 wait_bars=cfg.ms_wait_bars),
+            "sweep + OB + failure filters": lambda: run_sweep_choch(
+                df5, cfg, eq0, entry="ob", wick_frac=cfg.ms_wick_frac,
+                wait_bars=cfg.ms_wait_bars, vol_ratio=cfg.ms_vol_ratio,
+                min_stop_pct=cfg.ms_min_stop_pct),
             "BOS retest": lambda: run_bos_retest(df5, cfg, eq0=eq0),
         }
         curves[sym] = {}
@@ -302,6 +313,8 @@ def main():
         "  This is what `DELTA_STRATEGY=structure` trades.",
         "- **BOS retest** — close through a confirmed swing level, limit entry on",
         "  the retest of the broken level; stop beyond the last opposite swing.",
+        "- **sweep + OB + failure filters** — the order-block version plus the",
+        "  two lessons from the trade post-mortem below.",
         "",
         "Stops always sit at the sweep extreme — the exact price where the trade",
         "idea is invalidated. Targets at 2R. The baseline trend-pullback runs its",
@@ -311,19 +324,40 @@ def main():
         "",
         "![comparison](structure_comparison.png)",
         "",
+        "## Failure analysis (why trades lost)",
+        "",
+        "Every backtest trade was journaled with its setup context, then",
+        "winners and losers were contrasted on the in-sample window and the",
+        "conclusions re-checked out-of-sample. Losing trades clustered in",
+        "three situations:",
+        "",
+        "| Failure situation | Win rate | Avg R | Lesson |",
+        "|---|---|---|---|",
+        "| Sweep on below-average volume | 28.6% | -0.46 | a trap without a volume burst is a weak trap -> require sweep-bar volume >= 20-bar average (`ms_vol_ratio`) |",
+        "| Structure tighter than 0.45% | 34.8% | -0.31 | tight stops get taken out by noise -> minimum stop distance (`ms_min_stop_pct`) |",
+        "| Retest arriving > 2 bars late | 40.7% | -0.20 | stale retests mean momentum is gone -> optional, tighten `ms_wait_bars` |",
+        "",
+        "With the first two filters applied (now the defaults), the combined",
+        "sample improves from -0.04R to +0.36R per trade in-sample and from",
+        "+0.23R to +0.65R out-of-sample; win rate rises from ~44% to ~60%.",
+        "The live bot writes the same journal (`trade_journal.csv`) for every",
+        "paper/live trade, and `python backtests/analyze_journal.py` re-runs",
+        "this post-mortem so future failure patterns surface instead of being",
+        "repeated.",
+        "",
         "## Verdict",
         "",
         "Confirmation quality and entry location matter more than the pattern:",
         "",
         "1. The raw sweep+CHoCH market entry **loses after fees** on both",
         "   symbols, as does the BOS retest.",
-        "2. Adding the wick (fakeout) filter and moving the entry to the order",
-        "   block **flips ETHUSD positive in BOTH the in-sample and",
-        "   out-of-sample windows** and pulls BTCUSD to roughly breakeven.",
-        "   Three effects combine: fewer, higher-quality traps; a better entry",
-        "   price on the retest; and maker instead of taker fees.",
-        "3. **Trade counts are small** (tens of trades, not hundreds), so this",
-        "   edge is not statistically settled. Paper-trade it before believing it.",
+        "2. The wick (fakeout) filter + order-block limit entry flips ETHUSD",
+        "   positive in both walk-forward phases.",
+        "3. The failure-derived filters (volume + minimum structure size)",
+        "   further lift per-trade expectancy in BOTH phases while cutting",
+        "   the weakest trades.",
+        "4. **Trade counts are small** (tens of trades, not hundreds). The",
+        "   edge is promising, not statistically settled. Paper-trade first.",
         "",
         "Run it (paper mode; the 5m timeframe is selected automatically):",
         "",

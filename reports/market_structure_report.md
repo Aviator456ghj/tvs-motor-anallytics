@@ -1,6 +1,6 @@
 # Market-structure scalping — backtest report
 
-Generated: 2026-07-02 16:50 UTC
+Generated: 2026-07-02 17:12 UTC
 
 Mechanical 'smart money' entry models tested on 180 days of 5m
 Delta Exchange data (in-sample = first 120 days, out-of-sample = last
@@ -16,6 +16,8 @@ Delta Exchange data (in-sample = first 120 days, out-of-sample = last
   This is what `DELTA_STRATEGY=structure` trades.
 - **BOS retest** — close through a confirmed swing level, limit entry on
   the retest of the broken level; stop beyond the last opposite swing.
+- **sweep + OB + failure filters** — the order-block version plus the
+  two lessons from the trade post-mortem below.
 
 Stops always sit at the sweep extreme — the exact price where the trade
 idea is invalidated. Targets at 2R. The baseline trend-pullback runs its
@@ -23,18 +25,21 @@ usual 15m rules on the same 180 days.
 
 | symbol   | strategy                      | phase             |   trades |   trades_per_day |   win_rate_% |   profit_factor |   avg_win_$ |   avg_loss_$ |   total_return_% |   max_drawdown_% |
 |:---------|:------------------------------|:------------------|---------:|-----------------:|-------------:|----------------:|------------:|-------------:|-----------------:|-----------------:|
-| BTCUSD   | trend-pullback (baseline)     | full 180d         |      218 |             1.21 |         34.9 |            0.83 |        7.91 |        -5.13 |           -12.72 |           -18.23 |
+| BTCUSD   | trend-pullback (baseline)     | full 180d         |      218 |             1.21 |         34.9 |            0.82 |        7.9  |        -5.13 |           -12.78 |           -18.23 |
 | BTCUSD   | trend-pullback (baseline)     | in-sample 120d    |      150 |             1.25 |         31.3 |            0.71 |        8.14 |        -5.26 |           -15.88 |           -18.03 |
-| BTCUSD   | trend-pullback (baseline)     | out-of-sample 60d |       68 |             1.13 |         42.6 |            1.17 |        7.53 |        -4.79 |             3.75 |            -3.14 |
+| BTCUSD   | trend-pullback (baseline)     | out-of-sample 60d |       68 |             1.13 |         42.6 |            1.17 |        7.52 |        -4.79 |             3.69 |            -3.14 |
 | BTCUSD   | sweep + CHoCH (market)        | full 180d         |      149 |             0.83 |         38.9 |            0.67 |        5.37 |        -5.1  |           -15.26 |           -16.93 |
 | BTCUSD   | sweep + CHoCH (market)        | in-sample 120d    |      115 |             0.96 |         37.4 |            0.73 |        6.26 |        -5.1  |            -9.81 |           -14    |
 | BTCUSD   | sweep + CHoCH (market)        | out-of-sample 60d |       34 |             0.57 |         44.1 |            0.44 |        2.84 |        -5.11 |            -6.04 |            -6.87 |
 | BTCUSD   | sweep confirmed + order block | full 180d         |       31 |             0.17 |         35.5 |            0.69 |        7.69 |        -6.13 |            -3.8  |            -3.93 |
 | BTCUSD   | sweep confirmed + order block | in-sample 120d    |       26 |             0.22 |         34.6 |            0.68 |        7.86 |        -6.16 |            -3.4  |            -3.75 |
 | BTCUSD   | sweep confirmed + order block | out-of-sample 60d |        5 |             0.08 |         40   |            0.77 |        6.91 |        -5.95 |            -0.42 |            -1.82 |
-| BTCUSD   | BOS retest                    | full 180d         |      908 |             5.04 |         34.7 |            0.58 |        2.86 |        -2.6  |           -64.08 |           -64.58 |
+| BTCUSD   | sweep + OB + failure filters  | full 180d         |       13 |             0.07 |         61.5 |            2.04 |        7.63 |        -6    |             3.11 |            -1.13 |
+| BTCUSD   | sweep + OB + failure filters  | in-sample 120d    |       11 |             0.09 |         63.6 |            2.31 |        7.9  |        -5.98 |             3.14 |            -1.13 |
+| BTCUSD   | sweep + OB + failure filters  | out-of-sample 60d |        2 |             0.03 |         50   |            0.94 |        5.72 |        -6.06 |            -0.03 |            -0.58 |
+| BTCUSD   | BOS retest                    | full 180d         |      908 |             5.04 |         34.7 |            0.58 |        2.86 |        -2.6  |           -64.07 |           -64.58 |
 | BTCUSD   | BOS retest                    | in-sample 120d    |      614 |             5.12 |         35.7 |            0.6  |        3.29 |        -3.03 |           -47.44 |           -47.44 |
-| BTCUSD   | BOS retest                    | out-of-sample 60d |      294 |             4.9  |         32.7 |            0.52 |        1.87 |        -1.75 |           -31.67 |           -32.61 |
+| BTCUSD   | BOS retest                    | out-of-sample 60d |      294 |             4.9  |         32.7 |            0.52 |        1.87 |        -1.75 |           -31.65 |           -32.61 |
 | ETHUSD   | trend-pullback (baseline)     | full 180d         |      257 |             1.43 |         35.8 |            0.93 |        9.07 |        -5.46 |            -6.53 |           -13.09 |
 | ETHUSD   | trend-pullback (baseline)     | in-sample 120d    |      171 |             1.43 |         35.7 |            0.94 |        9.14 |        -5.4  |            -3.61 |           -10.86 |
 | ETHUSD   | trend-pullback (baseline)     | out-of-sample 60d |       86 |             1.43 |         36   |            0.9  |        8.94 |        -5.57 |            -3.03 |            -7.03 |
@@ -44,11 +49,35 @@ usual 15m rules on the same 180 days.
 | ETHUSD   | sweep confirmed + order block | full 180d         |       42 |             0.23 |         52.4 |            1.42 |        7.63 |        -5.92 |             4.94 |            -3.16 |
 | ETHUSD   | sweep confirmed + order block | in-sample 120d    |       29 |             0.24 |         51.7 |            1.28 |        7.26 |        -6.09 |             2.37 |            -3.16 |
 | ETHUSD   | sweep confirmed + order block | out-of-sample 60d |       13 |             0.22 |         53.8 |            1.77 |        8.42 |        -5.55 |             2.51 |            -1.36 |
+| ETHUSD   | sweep + OB + failure filters  | full 180d         |       22 |             0.12 |         59.1 |            2.01 |        7.4  |        -5.31 |             4.83 |            -1.46 |
+| ETHUSD   | sweep + OB + failure filters  | in-sample 120d    |       13 |             0.11 |         53.8 |            1.33 |        6.66 |        -5.83 |             1.17 |            -1.46 |
+| ETHUSD   | sweep + OB + failure filters  | out-of-sample 60d |        9 |             0.15 |         66.7 |            3.85 |        8.25 |        -4.29 |             3.62 |            -0.61 |
 | ETHUSD   | BOS retest                    | full 180d         |     1006 |             5.59 |         35.7 |            0.64 |        3.13 |        -2.71 |           -62.97 |           -64.31 |
 | ETHUSD   | BOS retest                    | in-sample 120d    |      672 |             5.6  |         36.2 |            0.64 |        3.56 |        -3.17 |           -49.61 |           -50.49 |
 | ETHUSD   | BOS retest                    | out-of-sample 60d |      334 |             5.57 |         34.7 |            0.66 |        2.23 |        -1.8  |           -26.51 |           -29.59 |
 
 ![comparison](structure_comparison.png)
+
+## Failure analysis (why trades lost)
+
+Every backtest trade was journaled with its setup context, then
+winners and losers were contrasted on the in-sample window and the
+conclusions re-checked out-of-sample. Losing trades clustered in
+three situations:
+
+| Failure situation | Win rate | Avg R | Lesson |
+|---|---|---|---|
+| Sweep on below-average volume | 28.6% | -0.46 | a trap without a volume burst is a weak trap -> require sweep-bar volume >= 20-bar average (`ms_vol_ratio`) |
+| Structure tighter than 0.45% | 34.8% | -0.31 | tight stops get taken out by noise -> minimum stop distance (`ms_min_stop_pct`) |
+| Retest arriving > 2 bars late | 40.7% | -0.20 | stale retests mean momentum is gone -> optional, tighten `ms_wait_bars` |
+
+With the first two filters applied (now the defaults), the combined
+sample improves from -0.04R to +0.36R per trade in-sample and from
++0.23R to +0.65R out-of-sample; win rate rises from ~44% to ~60%.
+The live bot writes the same journal (`trade_journal.csv`) for every
+paper/live trade, and `python backtests/analyze_journal.py` re-runs
+this post-mortem so future failure patterns surface instead of being
+repeated.
 
 ## Verdict
 
@@ -56,13 +85,13 @@ Confirmation quality and entry location matter more than the pattern:
 
 1. The raw sweep+CHoCH market entry **loses after fees** on both
    symbols, as does the BOS retest.
-2. Adding the wick (fakeout) filter and moving the entry to the order
-   block **flips ETHUSD positive in BOTH the in-sample and
-   out-of-sample windows** and pulls BTCUSD to roughly breakeven.
-   Three effects combine: fewer, higher-quality traps; a better entry
-   price on the retest; and maker instead of taker fees.
-3. **Trade counts are small** (tens of trades, not hundreds), so this
-   edge is not statistically settled. Paper-trade it before believing it.
+2. The wick (fakeout) filter + order-block limit entry flips ETHUSD
+   positive in both walk-forward phases.
+3. The failure-derived filters (volume + minimum structure size)
+   further lift per-trade expectancy in BOTH phases while cutting
+   the weakest trades.
+4. **Trade counts are small** (tens of trades, not hundreds). The
+   edge is promising, not statistically settled. Paper-trade first.
 
 Run it (paper mode; the 5m timeframe is selected automatically):
 

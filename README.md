@@ -15,11 +15,12 @@ touch real money unless you explicitly enable live mode.
 > - **trend-pullback** (default): mildly positive on BTCUSD over the last
 >   60 days, but **negative over the full 180 days** — its edge is
 >   window-dependent.
-> - **structure** (confirmed liquidity sweep + order-block entry): the
->   only strategy with a positive 180-day equity curve — **ETHUSD +4.9%,
->   52% win rate, profit factor 1.42, positive in BOTH walk-forward
->   phases** — but it trades rarely (~1 trade / 4 days) and the sample is
->   only ~42 trades, so the edge is not statistically settled.
+> - **structure** (confirmed liquidity sweep + order-block entry, plus
+>   failure-derived filters): the only strategy positive on BOTH symbols
+>   over 180 days — **BTCUSD +3.1% / ETHUSD +4.8%, ~60% win rate, profit
+>   factor ~2.0, max drawdown < 1.5%** — but it is very selective
+>   (~1 trade/week/symbol; 35 trades total), so the edge is not
+>   statistically settled.
 >
 > **No strategy wins every trade.** Scalping crypto after fees is brutally
 > hard; treat this as a research platform with good risk hygiene, not a
@@ -75,17 +76,40 @@ exact, mechanical entry/exit points and a confirmation stack:
    edge) — filled only on a retest, which means a better price, maker
    fees, and a tighter stop;
 5. stop at the sweep extreme (the exact invalidation price), target 2R,
-   the unfilled limit cancels after 12 bars.
+   the unfilled limit cancels after 12 bars;
+6. **failure filters** learned from the trade post-mortem (below): the
+   sweep bar must carry at least average volume, and the structure must
+   be at least 0.45% deep.
 
 Head-to-head backtest over 180 days
 ([`reports/market_structure_report.md`](reports/market_structure_report.md)):
-the raw sweep entry and BOS-retest lose after fees, but the confirmed
-order-block version is the best performer in the repo — positive on ETHUSD
-in both walk-forward phases. Small sample; paper-trade it first:
+the raw sweep entry and BOS-retest lose after fees; the confirmed
+order-block version with failure filters is the best performer in the
+repo — positive on both symbols in a small sample. Paper-trade it first:
 
 ```bash
 DELTA_STRATEGY=structure DELTA_SYMBOLS=ETHUSD python run_bot.py
 ```
+
+## Learning from losing trades (the journal)
+
+Winners tell you what worked; losers tell you what to stop doing. Every
+trade the bot closes (paper or live) is appended to `trade_journal.csv`
+together with the setup context it was taken in — sweep volume ratio,
+wick quality, structure depth, trend alignment, stop size. Re-run the
+post-mortem any time:
+
+```bash
+python backtests/analyze_journal.py
+```
+
+The backtest post-mortem found losers clustered in three situations —
+low-volume sweeps (29% win rate), structures tighter than 0.45% (35%),
+and retests arriving late (41%). The first two became default filters
+(`ms_vol_ratio`, `ms_min_stop_pct`) after verifying they improved BOTH
+walk-forward phases; the third is available by tightening `ms_wait_bars`.
+When the journal accumulates new failure clusters, tighten the matching
+config filter — that is the refinement loop.
 
 ## Reproduce the backtest / performance report
 

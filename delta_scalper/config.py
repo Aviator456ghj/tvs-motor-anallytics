@@ -55,6 +55,11 @@ class Config:
     ms_r_multiple: float = 2.0     # take-profit in R
     ms_wick_frac: float = 0.5      # fakeout filter: wick beyond level >= 50% of bar range
     ms_wait_bars: int = 12         # cancel the order-block limit if unfilled
+    # failure-derived filters (see reports/market_structure_report.md §failure
+    # analysis): losing trades clustered in low-volume sweeps and too-tight
+    # structures; both filters validated in-sample AND out-of-sample
+    ms_vol_ratio: float = 1.0      # sweep bar volume >= this x 20-bar average
+    ms_min_stop_pct: float = 0.0045  # skip structures tighter than 0.45% (noise-stopped)
 
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity

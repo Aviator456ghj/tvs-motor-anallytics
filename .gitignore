@@ -3,3 +3,4 @@ __pycache__/
 .env
 scalper_state*.json
 scalper.log
+trade_journal.csv
