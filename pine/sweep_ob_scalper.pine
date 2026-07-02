@@ -1,0 +1,141 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────────────────────
+// Liquidity Sweep + Order Block Scalper (confirmed)
+//
+// Pine Script port of the delta_scalper "structure" strategy:
+//   1. Liquidity level : confirmed swing high/low on a higher timeframe (1h)
+//   2. Sweep           : a bar wicks THROUGH the level but closes back inside
+//   3. Fakeout filter  : the wick beyond the level >= 50% of the bar's range
+//   4. Volume filter   : sweep-bar volume >= 20-bar average  (failure filter)
+//   5. CHoCH confirm   : close beyond the sweep bar's local extreme within
+//                        6 bars, without violating the sweep extreme first
+//   6. Entry           : LIMIT at the order block (sweep bar body edge),
+//                        canceled if unfilled after 12 bars
+//   7. Exits           : stop at the sweep extreme, take-profit at 2R,
+//                        time exit after 72 bars; min structure 0.45%
+//
+// Recommended chart timeframe: 5m. Backtested on Delta Exchange BTCUSD /
+// ETHUSD perpetuals: ~60% win rate, profit factor ~2, but only ~1 trade per
+// week per symbol over 180 days — a small sample. No profit guarantee.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Sweep + Order Block Scalper",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,          // ~maker entry + taker exit, averaged
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+htfTF        = input.timeframe("60", "Liquidity level timeframe")
+swingK       = input.int(3,   "Swing fractal half-width (HTF bars)", minval = 1)
+microBars    = input.int(3,   "CHoCH trigger lookback (bars)",       minval = 1)
+confirmBars  = input.int(6,   "Max bars from sweep to confirmation", minval = 1)
+waitBars     = input.int(12,  "Cancel unfilled limit after (bars)",  minval = 1)
+maxHoldBars  = input.int(72,  "Time exit after (bars in trade)",     minval = 1)
+rMultiple    = input.float(2.0,  "Take-profit (R multiple)",  step = 0.1)
+wickFrac     = input.float(0.5,  "Min wick fraction of range", step = 0.05)
+volRatio     = input.float(1.0,  "Min sweep volume vs 20-bar avg", step = 0.1)
+minStopPct   = input.float(0.45, "Min stop distance (%)",     step = 0.05)
+riskPct      = input.float(0.5,  "Risk per trade (% equity)", step = 0.1)
+maxLev       = input.float(3.0,  "Max leverage",              step = 0.5)
+allowLongs   = input.bool(true,  "Allow longs")
+allowShorts  = input.bool(true,  "Allow shorts")
+
+// ───────────────────── HTF liquidity levels (no repaint) ─────────────────────
+// last CONFIRMED swing high/low of the CLOSED higher-timeframe bar
+htfSwingHi = request.security(syminfo.tickerid, htfTF,
+     fixnan(ta.pivothigh(high, swingK, swingK))[1],
+     lookahead = barmerge.lookahead_on)
+htfSwingLo = request.security(syminfo.tickerid, htfTF,
+     fixnan(ta.pivotlow(low, swingK, swingK))[1],
+     lookahead = barmerge.lookahead_on)
+
+volOk = volume >= volRatio * ta.sma(volume, 20)
+
+// ─────────────────────────── setup state machine ─────────────────────────────
+// side: 0 = no setup, 1 = long setup armed, -1 = short setup armed
+var int   side       = 0
+var float extreme    = na   // sweep wick extreme  -> stop-loss
+var float trigger    = na   // CHoCH trigger level
+var float obLevel    = na   // order block (sweep bar body edge) -> limit entry
+var int   sweepBar   = na
+var int   orderBar   = na   // bar the limit order was placed
+
+flat = strategy.position_size == 0 and strategy.opentrades == 0
+
+// invalidate / expire an armed setup
+if side != 0
+    violated = side == 1 ? low < extreme : high > extreme
+    expired  = bar_index - sweepBar > confirmBars
+    if violated or expired
+        side := 0
+
+// detect a fresh sweep (only when flat, nothing armed, no order resting)
+if flat and side == 0 and na(orderBar)
+    rng  = high - low
+    // long: wick through the HTF swing low, close back above it
+    sweptLo = not na(htfSwingLo) and low < htfSwingLo and close > htfSwingLo
+    wickLo  = htfSwingLo - low
+    if allowLongs and sweptLo and rng > 0 and wickLo / rng >= wickFrac and volOk
+        side    := 1
+        extreme := low
+        trigger := ta.highest(high, microBars + 1)
+        obLevel := math.max(open, close)
+        sweepBar := bar_index
+    // short: wick through the HTF swing high, close back below it
+    sweptHi = not na(htfSwingHi) and high > htfSwingHi and close < htfSwingHi
+    wickHi  = high - htfSwingHi
+    if side == 0 and allowShorts and sweptHi and rng > 0 and wickHi / rng >= wickFrac and volOk
+        side    := -1
+        extreme := high
+        trigger := ta.lowest(low, microBars + 1)
+        obLevel := math.min(open, close)
+        sweepBar := bar_index
+
+// CHoCH confirmation -> rest a limit order at the order block
+confirmedLong  = side == 1  and bar_index > sweepBar and close > trigger
+confirmedShort = side == -1 and bar_index > sweepBar and close < trigger
+if (confirmedLong or confirmedShort) and flat
+    stopDist = math.abs(obLevel - extreme)
+    priceOk  = confirmedLong ? close > obLevel : close < obLevel
+    if priceOk and stopDist / obLevel * 100 >= minStopPct
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyLev  = strategy.equity * maxLev / obLevel
+        qty     = math.min(qtyRisk, qtyLev)
+        tp      = obLevel + (confirmedLong ? 1 : -1) * rMultiple * stopDist
+        if confirmedLong
+            strategy.entry("Long", strategy.long, qty = qty, limit = obLevel)
+            strategy.exit("Long exit", "Long", stop = extreme, limit = tp)
+        else
+            strategy.entry("Short", strategy.short, qty = qty, limit = obLevel)
+            strategy.exit("Short exit", "Short", stop = extreme, limit = tp)
+        orderBar := bar_index
+    side := 0
+
+// cancel a stale unfilled limit (momentum is gone if the retest never comes)
+if not na(orderBar) and strategy.position_size == 0 and bar_index - orderBar > waitBars
+    strategy.cancel("Long")
+    strategy.cancel("Short")
+    orderBar := na
+if strategy.position_size != 0
+    orderBar := na
+
+// time-based exit
+if strategy.position_size != 0
+    entryBar = strategy.opentrades.entry_bar_index(strategy.opentrades - 1)
+    if bar_index - entryBar >= maxHoldBars
+        strategy.close_all(comment = "time exit")
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(htfSwingHi, "HTF swing high", color = color.new(#e34948, 30), style = plot.style_line, linewidth = 1)
+plot(htfSwingLo, "HTF swing low",  color = color.new(#1baf7a, 30), style = plot.style_line, linewidth = 1)
+plot(side != 0 or not na(orderBar) ? obLevel : na, "Order block", color = color.new(#eda100, 0), style = plot.style_linebr, linewidth = 2)
+plot(side != 0 or not na(orderBar) ? extreme : na, "Invalidation", color = color.new(#e34948, 0), style = plot.style_linebr, linewidth = 1)
+
+plotshape(side == 1 and side[1] != 1,  "Sweep low",  shape.triangleup,   location.belowbar, color.new(#1baf7a, 0), size = size.tiny, text = "sweep")
+plotshape(side == -1 and side[1] != -1, "Sweep high", shape.triangledown, location.abovebar, color.new(#e34948, 0), size = size.tiny, text = "sweep")
+plotshape(confirmedLong,  "CHoCH long",  shape.labelup,   location.belowbar, color.new(#2a78d6, 0), size = size.tiny, text = "CHoCH", textcolor = color.white)
+plotshape(confirmedShort, "CHoCH short", shape.labeldown, location.abovebar, color.new(#2a78d6, 0), size = size.tiny, text = "CHoCH", textcolor = color.white)
