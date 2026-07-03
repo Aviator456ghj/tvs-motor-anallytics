@@ -19,6 +19,7 @@ from .config import Config
 from .delta_client import DeltaClient
 from .paper import PaperBroker
 from .risk import RiskManager
+from .choch import ChochFibStrategy
 from .fib import FibRetracementStrategy
 from .strategy import TrendPullbackStrategy
 from .structure import MarketStructureStrategy
@@ -29,6 +30,7 @@ STRATEGIES = {
     "pullback": TrendPullbackStrategy,
     "structure": MarketStructureStrategy,
     "fib": FibRetracementStrategy,
+    "choch": ChochFibStrategy,
 }
 
 
@@ -52,7 +54,7 @@ class ScalpingBot:
     def fetch_closed_candles(self, symbol: str, bars: int = 400) -> pd.DataFrame:
         tf = self.cfg.timeframe_minutes
         now = int(time.time())
-        res = f"{tf}m"
+        res = "1h" if tf == 60 else f"{tf}m"
         data = self.client.get_candles(symbol, res, now - bars * tf * 60, now)
         df = pd.DataFrame(data)
         if df.empty:
@@ -195,7 +197,7 @@ class ScalpingBot:
         log.info("starting scalping agent [%s] strategy=%s symbols=%s tf=%dm risk/trade=%.2f%%",
                  mode, cfg.strategy, cfg.symbols, cfg.timeframe_minutes,
                  cfg.risk_per_trade * 100)
-        if cfg.strategy in ("structure", "fib"):
+        if cfg.strategy in ("structure", "fib", "choch"):
             log.warning("%s strategy: positive but small-sample backtest — "
                         "validate in paper mode before any live size",
                         cfg.strategy)

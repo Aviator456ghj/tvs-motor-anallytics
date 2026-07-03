@@ -32,6 +32,8 @@ class Config:
     #                        (best per-trade quality; very selective)
     # "fib":                 0.618-retracement / 1.618-extension with trend
     #                        filter (bigger sample; BTC-validated)
+    # "choch":               1h trend-change (CHoCH) swing + fib discount
+    #                        entry, 2.618 target (BTC-only validated)
     strategy: str = os.environ.get("DELTA_STRATEGY", "pullback")
 
     # --- strategy (walk-forward selected; see backtests/README section in repo README) ---
@@ -74,6 +76,12 @@ class Config:
     # the first 12 bars had a 23% win rate vs 36-43% for slower pullbacks
     fib_min_pull_bars: int = 12
 
+    # --- choch strategy parameters (DELTA_STRATEGY=choch, 1h timeframe) ---
+    choch_swing_k: int = 5         # fractal half-width on 1h
+    choch_entry_r: float = 0.5     # limit at the 0.5 retracement of A->B
+    choch_ext_r: float = 2.618     # target: A + 2.618*(B-A) — reversals run far
+    choch_wait_bars: int = 120     # cancel unfilled discount limit (~5 days)
+
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity
     max_leverage: float = float(os.environ.get("DELTA_MAX_LEVERAGE", "3"))
@@ -93,10 +101,12 @@ class Config:
     log_file: str = os.environ.get("DELTA_LOG_FILE", "scalper.log")
 
     def __post_init__(self):
-        # structure and fib validated on 5m; honor an explicit override
-        if self.strategy in ("structure", "fib") and \
-                "DELTA_TIMEFRAME_MIN" not in os.environ:
-            self.timeframe_minutes = 5
+        # structure/fib validated on 5m, choch on 1h; honor explicit override
+        if "DELTA_TIMEFRAME_MIN" not in os.environ:
+            if self.strategy in ("structure", "fib"):
+                self.timeframe_minutes = 5
+            elif self.strategy == "choch":
+                self.timeframe_minutes = 60
 
     @property
     def round_trip_cost(self) -> float:

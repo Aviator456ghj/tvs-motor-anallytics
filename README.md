@@ -28,6 +28,10 @@ touch real money unless you explicitly enable live mode.
 >   identical in-sample and out-of-sample (1.32/1.32). A ~35% win rate is
 >   by design: the payoff comes from ~4:1 reward:risk, so losing streaks
 >   are normal.
+> - **choch** (1h trend-change swing + fib discount entry, 2.618 target):
+>   **BTCUSD +17.4% over 540 days, PF 1.58, out-of-sample PF 1.76, max
+>   drawdown −3.2%** — the best risk-adjusted result in the repo. BTC
+>   only (ETH did not validate); ~1 trade/week.
 >
 > **No strategy wins every trade.** Scalping crypto after fees is brutally
 > hard; treat this as a research platform with good risk hygiene, not a
@@ -117,6 +121,22 @@ confirmation, scale-out exits, leg-size and RSI filters.
 
 ```bash
 DELTA_STRATEGY=fib DELTA_SYMBOLS=BTCUSD python run_bot.py
+```
+
+## Fourth strategy: CHoCH-anchored fib (1h trend changes)
+
+`DELTA_STRATEGY=choch` trades trend reversals: when a 1h downtrend's
+lower-high is broken by a close (change of character), the fib is anchored
+to that reversal swing A→B. Limit entry at the 0.5 discount retest, stop
+below A (reversal invalidated), target the **2.618 extension from A** —
+unlike ordinary swings, trend-change swings run far enough that 2.618 is
+the best target. Mirror logic for shorts. Validated across the whole
+config family on BTCUSD in both walk-forward phases
+([`reports/choch_report.md`](reports/choch_report.md), with auto-drawn
+setup examples); ETHUSD did not validate.
+
+```bash
+DELTA_STRATEGY=choch DELTA_SYMBOLS=BTCUSD python run_bot.py
 ```
 
 ## Learning from losing trades (the journal)
