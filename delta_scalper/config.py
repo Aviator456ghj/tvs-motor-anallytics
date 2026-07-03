@@ -87,6 +87,11 @@ class Config:
     # clip the trade — validated: OOS profit factor 1.47 -> 1.71, win rate
     # 34.8% -> 39.1% with a 5%-of-swing buffer
     choch_stop_buffer: float = 0.05  # as a fraction of the A->B swing
+    # engulfing confirmation: the confirming candle must close beyond the
+    # counter candle's OPEN (true engulf). Post-mortem: engulfed entries won
+    # 60% vs 34.6% for weak confirmations; validated out-of-sample (50% wr,
+    # PF 1.82). Cuts trade frequency roughly in half.
+    choch_require_engulf: bool = os.environ.get("DELTA_CHOCH_ENGULF", "1") == "1"
     # entry mode: "candle" = golden-zone candle-color confirmation (a candle
     # touching the zone closes against the trade direction, the next candle
     # closes with it -> market entry); "limit" = blind limit at the 0.5 level

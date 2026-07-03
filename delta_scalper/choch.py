@@ -178,6 +178,18 @@ class ChochFibStrategy:
                         conf = (cl[j + 1] > o[j + 1]) if d == 1 else \
                                (cl[j + 1] < o[j + 1])
                         if conf:
+                            if c.choch_require_engulf:
+                                # true engulf: close beyond the counter
+                                # candle's OPEN. The FIRST zone reaction is
+                                # the informative one — a weak (non-engulf)
+                                # confirmation voids the whole setup rather
+                                # than waiting for a later pair (validated:
+                                # re-scanning underperforms the base).
+                                engulfed = (cl[j + 1] > o[j]) if d == 1 else \
+                                           (cl[j + 1] < o[j])
+                                if not engulfed:
+                                    voided = True
+                                    break
                             trigger_bar = j + 1
                             break
             if voided or trigger_bar != last:
