@@ -4,3 +4,4 @@ __pycache__/
 scalper_state*.json
 scalper.log
 trade_journal.csv
+bot_stdout.log
