@@ -128,14 +128,14 @@ class ChochFibStrategy:
             if rng <= 0:
                 continue
             entry = B - d * c.choch_entry_r * rng
-            stop = A - d * 1e-9 * A  # just beyond A
+            stop = A - d * c.choch_stop_buffer * rng  # buffer beyond A
             tp = A + d * c.choch_ext_r * rng
             stop_d = abs(entry - stop)
             if stop_d <= 0 or stop_d / entry < c.min_move_cost_ratio * c.round_trip_cost:
                 continue
             if d * (close - entry) <= 0 or d * (tp - entry) <= 0:
                 continue
-            return self._make_signal(d, entry, A, tp, stop_d, B,
+            return self._make_signal(d, entry, stop, tp, stop_d, B,
                                      entry_type="limit",
                                      expires=c.choch_wait_bars)
         return None
@@ -183,20 +183,21 @@ class ChochFibStrategy:
             if voided or trigger_bar != last:
                 continue  # no trigger, already consumed earlier, or voided
             entry = float(cl[last])
+            stop = A - d * c.choch_stop_buffer * rng  # buffer beyond A
             tp = A + d * c.choch_ext_r * rng
-            stop_d = abs(entry - A)
+            stop_d = abs(entry - stop)
             if stop_d <= 0 or d * (tp - entry) <= 0 or \
                     stop_d / entry < c.min_move_cost_ratio * c.round_trip_cost:
                 continue
-            return self._make_signal(d, entry, A, tp, stop_d, B,
+            return self._make_signal(d, entry, stop, tp, stop_d, B,
                                      entry_type="market", expires=0)
         return None
 
-    def _make_signal(self, d, entry, A, tp, stop_d, B, entry_type, expires):
+    def _make_signal(self, d, entry, stop, tp, stop_d, B, entry_type, expires):
         return Signal(
             side="buy" if d == 1 else "sell",
             entry_ref=float(entry),
-            stop_loss=float(A),
+            stop_loss=float(stop),
             take_profit=float(tp),
             atr_value=stop_d,
             entry_type=entry_type,

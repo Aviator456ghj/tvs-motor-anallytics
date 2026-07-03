@@ -83,6 +83,10 @@ class Config:
     choch_ext_r: float = 2.618     # target: A + 2.618*(B-A) — reversals run far
     choch_wait_bars: int = 120     # setup validity window (~5 days)
     choch_disrespect_r: float = 0.786  # a CLOSE past this level voids the setup
+    # buffer stop: extra room beyond A so wick-hunts under the swing don't
+    # clip the trade — validated: OOS profit factor 1.47 -> 1.71, win rate
+    # 34.8% -> 39.1% with a 5%-of-swing buffer
+    choch_stop_buffer: float = 0.05  # as a fraction of the A->B swing
     # entry mode: "candle" = golden-zone candle-color confirmation (a candle
     # touching the zone closes against the trade direction, the next candle
     # closes with it -> market entry); "limit" = blind limit at the 0.5 level
@@ -137,6 +141,8 @@ class Config:
             )
         if self.sizing == "risk" and self.risk_per_trade > 0.02:
             raise SystemExit("risk_per_trade > 2% is not allowed by this agent.")
-        if self.sizing == "compound" and self.compound_leverage > 3:
+        if self.compound_leverage > 3:
             raise SystemExit("compound_leverage > 3 is not allowed: at full-"
-                             "balance staking, higher leverage risks ruin.")
+                             "balance staking, higher leverage risks ruin — "
+                             "25x+ was liquidated on trade #2 in backtest "
+                             "(see reports/leverage_sweep.png).")
