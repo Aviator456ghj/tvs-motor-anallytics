@@ -106,6 +106,13 @@ class ChochFibStrategy:
         self.cfg = cfg
 
     def signal(self, candles: pd.DataFrame) -> Signal | None:
+        if self.cfg.choch_entry_mode == "candle":
+            return self._signal_candle_confirm(candles)
+        return self._signal_limit(candles)
+
+    # ---- mode "limit": blind limit resting at the 0.5 retracement ----
+
+    def _signal_limit(self, candles: pd.DataFrame) -> Signal | None:
         c = self.cfg
         if len(candles) < 6 * c.choch_swing_k + 20:
             return None
@@ -128,22 +135,79 @@ class ChochFibStrategy:
                 continue
             if d * (close - entry) <= 0 or d * (tp - entry) <= 0:
                 continue
-            return Signal(
-                side="buy" if d == 1 else "sell",
-                entry_ref=float(entry),
-                stop_loss=float(A),
-                take_profit=float(tp),
-                atr_value=stop_d,
-                entry_type="limit",
-                expires_bars=c.choch_wait_bars,
-                context={
-                    "setup": "choch_fib",
-                    "level": float(B),
-                    "wick_ratio": None,
-                    "sweep_depth_atr": None,
-                    "vol_ratio": None,
-                    "trend_align": 1,
-                    "stop_pct": round(float(stop_d / entry * 100), 3),
-                },
-            )
+            return self._make_signal(d, entry, A, tp, stop_d, B,
+                                     entry_type="limit",
+                                     expires=c.choch_wait_bars)
         return None
+
+    # ---- mode "candle": golden-zone candle-color confirmation ----
+    # a candle touches/enters the 0.5-0.618 zone and closes AGAINST the trade
+    # direction (red for longs), the NEXT candle closes WITH it (green for
+    # longs) -> market entry on that close. Setup voids on a close beyond B,
+    # a close past the 0.786 level, or window expiry.
+
+    def _signal_candle_confirm(self, candles: pd.DataFrame) -> Signal | None:
+        c = self.cfg
+        if len(candles) < 6 * c.choch_swing_k + 20:
+            return None
+        df = candles.reset_index(drop=True)
+        o = df["open"].values
+        h, l, cl = df["high"].values, df["low"].values, df["close"].values
+        last = len(df) - 1
+        for s in find_choch_setups(df, c.choch_swing_k):
+            if not (s["ready_bar"] < last <= s["ready_bar"] + c.choch_wait_bars):
+                continue
+            d = s["dir"]
+            A, B = s["A"], s["B"]
+            rng = abs(B - A)
+            if rng <= 0:
+                continue
+            z_near = B - d * c.choch_entry_r * rng
+            void_lvl = B - d * c.choch_disrespect_r * rng
+            trigger_bar = None
+            voided = False
+            for j in range(s["ready_bar"] + 1, last + 1):
+                if (cl[j] > B if d == 1 else cl[j] < B) or \
+                   (cl[j] < void_lvl if d == 1 else cl[j] > void_lvl):
+                    voided = True
+                    break
+                if trigger_bar is None and j < last:
+                    touched = (l[j] <= z_near if d == 1 else h[j] >= z_near)
+                    counter = (cl[j] < o[j]) if d == 1 else (cl[j] > o[j])
+                    if touched and counter:
+                        conf = (cl[j + 1] > o[j + 1]) if d == 1 else \
+                               (cl[j + 1] < o[j + 1])
+                        if conf:
+                            trigger_bar = j + 1
+                            break
+            if voided or trigger_bar != last:
+                continue  # no trigger, already consumed earlier, or voided
+            entry = float(cl[last])
+            tp = A + d * c.choch_ext_r * rng
+            stop_d = abs(entry - A)
+            if stop_d <= 0 or d * (tp - entry) <= 0 or \
+                    stop_d / entry < c.min_move_cost_ratio * c.round_trip_cost:
+                continue
+            return self._make_signal(d, entry, A, tp, stop_d, B,
+                                     entry_type="market", expires=0)
+        return None
+
+    def _make_signal(self, d, entry, A, tp, stop_d, B, entry_type, expires):
+        return Signal(
+            side="buy" if d == 1 else "sell",
+            entry_ref=float(entry),
+            stop_loss=float(A),
+            take_profit=float(tp),
+            atr_value=stop_d,
+            entry_type=entry_type,
+            expires_bars=expires,
+            context={
+                "setup": f"choch_fib_{self.cfg.choch_entry_mode}",
+                "level": float(B),
+                "wick_ratio": None,
+                "sweep_depth_atr": None,
+                "vol_ratio": None,
+                "trend_align": 1,
+                "stop_pct": round(float(stop_d / entry * 100), 3),
+            },
+        )

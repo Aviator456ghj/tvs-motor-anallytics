@@ -78,9 +78,22 @@ class Config:
 
     # --- choch strategy parameters (DELTA_STRATEGY=choch, 1h timeframe) ---
     choch_swing_k: int = 5         # fractal half-width on 1h
-    choch_entry_r: float = 0.5     # limit at the 0.5 retracement of A->B
+    choch_entry_r: float = 0.5     # golden zone near edge (0.5 retracement)
+    choch_zone_far_r: float = 0.618  # golden zone far edge
     choch_ext_r: float = 2.618     # target: A + 2.618*(B-A) — reversals run far
-    choch_wait_bars: int = 120     # cancel unfilled discount limit (~5 days)
+    choch_wait_bars: int = 120     # setup validity window (~5 days)
+    choch_disrespect_r: float = 0.786  # a CLOSE past this level voids the setup
+    # entry mode: "candle" = golden-zone candle-color confirmation (a candle
+    # touching the zone closes against the trade direction, the next candle
+    # closes with it -> market entry); "limit" = blind limit at the 0.5 level
+    choch_entry_mode: str = os.environ.get("DELTA_CHOCH_ENTRY", "candle")
+
+    # --- position sizing mode ---
+    # "risk" (default): risk_per_trade% of equity, sized off the stop distance
+    # "compound":       stake the FULL balance x compound_leverage every trade
+    #                   (the $1 -> grow experiment; a stop-loss bites the pot)
+    sizing: str = os.environ.get("DELTA_SIZING", "risk")
+    compound_leverage: float = float(os.environ.get("DELTA_COMPOUND_LEV", "1"))
 
     # --- risk management ---
     risk_per_trade: float = float(os.environ.get("DELTA_RISK_PER_TRADE", "0.005"))  # 0.5% of equity
@@ -107,6 +120,10 @@ class Config:
                 self.timeframe_minutes = 5
             elif self.strategy == "choch":
                 self.timeframe_minutes = 60
+        # in compound mode a single stop-loss can exceed a 2% daily limit;
+        # relax the default so one loss doesn't halt the experiment for a day
+        if self.sizing == "compound" and "DELTA_DAILY_LOSS_LIMIT" not in os.environ:
+            self.daily_loss_limit = 0.25
 
     @property
     def round_trip_cost(self) -> float:
@@ -118,5 +135,8 @@ class Config:
             raise SystemExit(
                 "DELTA_LIVE=1 but DELTA_API_KEY / DELTA_API_SECRET are not set."
             )
-        if self.risk_per_trade > 0.02:
+        if self.sizing == "risk" and self.risk_per_trade > 0.02:
             raise SystemExit("risk_per_trade > 2% is not allowed by this agent.")
+        if self.sizing == "compound" and self.compound_leverage > 3:
+            raise SystemExit("compound_leverage > 3 is not allowed: at full-"
+                             "balance staking, higher leverage risks ruin.")

@@ -79,8 +79,12 @@ class RiskManager:
             return RiskDecision(False, "loss streak — cooling off 6h")
         if stop_distance_frac <= 0:
             return RiskDecision(False, "invalid stop distance")
-        notional = equity * self.cfg.risk_per_trade / stop_distance_frac
-        notional = min(notional, equity * self.cfg.max_leverage)
+        if self.cfg.sizing == "compound":
+            # full balance staked every trade, compounding wins and losses
+            notional = equity * self.cfg.compound_leverage
+        else:
+            notional = equity * self.cfg.risk_per_trade / stop_distance_frac
+            notional = min(notional, equity * self.cfg.max_leverage)
         return RiskDecision(True, "ok", notional)
 
     def record_trade(self, pnl: float):
