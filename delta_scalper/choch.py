@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
+from .indicators import atr
 from .strategy import Signal
 
 
@@ -141,7 +142,7 @@ class ChochFibStrategy:
             d = s["dir"]
             A, B = s["A"], s["B"]
             rng = abs(B - A)
-            if rng <= 0:
+            if rng <= 0 or not self._break_is_displaced(df, s):
                 continue
             entry = B - d * c.choch_entry_r * rng
             stop = A - d * c.choch_stop_buffer * rng  # buffer beyond A
@@ -176,7 +177,7 @@ class ChochFibStrategy:
             d = s["dir"]
             A, B = s["A"], s["B"]
             rng = abs(B - A)
-            if rng <= 0:
+            if rng <= 0 or not self._break_is_displaced(df, s):
                 continue
             z_near = B - d * c.choch_entry_r * rng
             void_lvl = B - d * c.choch_disrespect_r * rng
@@ -220,6 +221,19 @@ class ChochFibStrategy:
             return self._make_signal(d, entry, stop, tp, stop_d, B,
                                      entry_type="market", expires=0)
         return None
+
+    def _break_is_displaced(self, df: pd.DataFrame, s: dict) -> bool:
+        """Displacement filter: the push from the CHoCH breaking close to
+        the B swing must be >= choch_min_break_atr ATRs — a decisive
+        character change with follow-through, not a drift."""
+        c = self.cfg
+        if c.choch_min_break_atr <= 0:
+            return True
+        bb = s["break_bar"]
+        a = atr(df, c.atr_period).values
+        if bb >= len(a) or np.isnan(a[bb]) or a[bb] <= 0:
+            return False
+        return abs(df["close"].iloc[bb] - s["B"]) / a[bb] >= c.choch_min_break_atr
 
     def _make_signal(self, d, entry, stop, tp, stop_d, B, entry_type, expires):
         # trend-ride mode: no fixed take-profit — the bot exits on a close

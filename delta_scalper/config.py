@@ -97,6 +97,11 @@ class Config:
     #            total growth; "target" = fixed 2.618 extension take-profit
     choch_exit_mode: str = os.environ.get("DELTA_CHOCH_EXIT", "trend")
     choch_max_hold_bars: int = 2000  # trend rides run for days; don't time-cut them
+    # displacement filter: the CHoCH breaking candle must travel >= this
+    # many ATRs past the broken swing — a decisive break, not a drift.
+    # Validated on the ride exit: wr +3pts both phases, PF 2.04->2.45 in /
+    # 3.66->4.24 out, max drawdown -41% -> -30%
+    choch_min_break_atr: float = 1.0
     # entry mode: "candle" = golden-zone candle-color confirmation (a candle
     # touching the zone closes against the trade direction, the next candle
     # closes with it -> market entry); "limit" = blind limit at the 0.5 level
