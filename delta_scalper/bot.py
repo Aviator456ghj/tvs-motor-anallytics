@@ -48,6 +48,7 @@ class ScalpingBot:
         self.products = {}
         self.last_signal_bar: dict[str, int] = {}
         self.live_entry_deadline: dict[str, float] = {}
+        self._trail_bar: dict[str, int] = {}
 
     # ---------- data ----------
 
@@ -111,7 +112,9 @@ class ScalpingBot:
         log.info("ENTRY signal %s %s %s ref=%.2f sl=%.2f tp=%.2f notional=%.2f",
                  sig.side, sig.entry_type, symbol, sig.entry_ref, sig.stop_loss,
                  sig.take_profit, decision.notional)
-        max_hold_s = self.cfg.max_hold_bars * self.cfg.timeframe_minutes * 60
+        hold_bars = self.cfg.choch_max_hold_bars \
+            if self.cfg.strategy == "choch" else self.cfg.max_hold_bars
+        max_hold_s = hold_bars * self.cfg.timeframe_minutes * 60
         if self.paper:
             if sig.entry_type == "limit":
                 self.paper.place_limit(
@@ -168,6 +171,11 @@ class ScalpingBot:
                 pnl = self.paper.check_exit(price)
                 if pnl is not None:
                     self.risk.record_trade(pnl)
+                elif pos and self.cfg.strategy == "choch" and \
+                        self.cfg.choch_exit_mode == "trend":
+                    pnl = self._trend_ride_exit(symbol, pos)
+                    if pnl is not None:
+                        self.risk.record_trade(pnl)
         else:
             # cancel a resting limit entry that outlived its validity window
             deadline = self.live_entry_deadline.get(symbol)
@@ -183,11 +191,39 @@ class ScalpingBot:
             size = int(positions.get("size", 0) or 0)
             if size != 0:
                 entry_ts = self.last_signal_bar.get(symbol, 0)
-                max_hold_s = self.cfg.max_hold_bars * self.cfg.timeframe_minutes * 60
+                hold_bars = self.cfg.choch_max_hold_bars \
+                    if self.cfg.strategy == "choch" else self.cfg.max_hold_bars
+                max_hold_s = hold_bars * self.cfg.timeframe_minutes * 60
                 if entry_ts and time.time() - entry_ts > max_hold_s:
                     side = "sell" if size > 0 else "buy"
                     self.client.close_position(p["id"], abs(size), side)
                     log.info("time-exit: closed %s position of %d", symbol, size)
+
+    def _trend_ride_exit(self, symbol: str, pos) -> float | None:
+        """Ride-the-trend exit: close when a 1h candle CLOSES through the
+        most recent confirmed swing trail (the opposite change of
+        character). Evaluated once per new closed bar."""
+        from .choch import last_confirmed_swings
+        candles = self.fetch_closed_candles(symbol)
+        if candles.empty:
+            return None
+        newest = int(candles["time"].iloc[-1])
+        if self._trail_bar.get(symbol) == newest:
+            return None
+        self._trail_bar[symbol] = newest
+        lo, hi = last_confirmed_swings(candles, self.cfg.choch_swing_k)
+        close = float(candles["close"].iloc[-1])
+        d = 1 if pos.side == "buy" else -1
+        trail = lo if d == 1 else hi
+        if trail is None:
+            return None
+        # only trail once structure has moved past the entry stop (beyond A)
+        active = trail > pos.stop_loss if d == 1 else trail < pos.stop_loss
+        crossed = close < trail if d == 1 else close > trail
+        if active and crossed:
+            log.info("trend-ride exit: %s closed through trail %.2f", symbol, trail)
+            return self.paper.force_close(close, "trend-exit (opposite CHoCH)")
+        return None
 
     # ---------- main loop ----------
 

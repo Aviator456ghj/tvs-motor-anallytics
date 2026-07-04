@@ -92,6 +92,11 @@ class Config:
     # 60% vs 34.6% for weak confirmations; validated out-of-sample (50% wr,
     # PF 1.82). Cuts trade frequency roughly in half.
     choch_require_engulf: bool = os.environ.get("DELTA_CHOCH_ENGULF", "1") == "1"
+    # exit mode: "trend" = ride until the OPPOSITE change of character
+    #            (close through the confirmed swing trail) — validated best
+    #            total growth; "target" = fixed 2.618 extension take-profit
+    choch_exit_mode: str = os.environ.get("DELTA_CHOCH_EXIT", "trend")
+    choch_max_hold_bars: int = 2000  # trend rides run for days; don't time-cut them
     # entry mode: "candle" = golden-zone candle-color confirmation (a candle
     # touching the zone closes against the trade direction, the next candle
     # closes with it -> market entry); "limit" = blind limit at the 0.5 level
@@ -129,6 +134,10 @@ class Config:
                 self.timeframe_minutes = 5
             elif self.strategy == "choch":
                 self.timeframe_minutes = 60
+        # engulf helps the fixed-target exit but hurts the trend-ride exit
+        # (fewer entries starve the compounding); pair defaults accordingly
+        if "DELTA_CHOCH_ENGULF" not in os.environ:
+            self.choch_require_engulf = self.choch_exit_mode == "target"
         # in compound mode a single stop-loss can exceed a 2% daily limit;
         # relax the default so one loss doesn't halt the experiment for a day
         if self.sizing == "compound" and "DELTA_DAILY_LOSS_LIMIT" not in os.environ:

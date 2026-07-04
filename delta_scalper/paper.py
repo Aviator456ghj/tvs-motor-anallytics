@@ -126,20 +126,32 @@ class PaperBroker:
         lo = low if low is not None else last_price
         exit_price = None
         reason = ""
+        has_tp = bool(pos.take_profit)
         if pos.side == "buy":
             if lo <= pos.stop_loss:
                 exit_price, reason = pos.stop_loss, "stop-loss"
-            elif hi >= pos.take_profit:
+            elif has_tp and hi >= pos.take_profit:
                 exit_price, reason = pos.take_profit, "take-profit"
         else:
             if hi >= pos.stop_loss:
                 exit_price, reason = pos.stop_loss, "stop-loss"
-            elif lo <= pos.take_profit:
+            elif has_tp and lo <= pos.take_profit:
                 exit_price, reason = pos.take_profit, "take-profit"
         if exit_price is None and time.time() >= pos.expires_at:
             exit_price, reason = last_price, "time-exit"
         if exit_price is None:
             return None
+        return self._close(pos, exit_price, reason)
+
+    def force_close(self, price: float, reason: str) -> float | None:
+        """Close the open position at `price` (bot-driven exits, e.g. the
+        trend-ride opposite-CHoCH exit)."""
+        pos = self.position
+        if pos is None:
+            return None
+        return self._close(pos, price, reason)
+
+    def _close(self, pos: PaperPosition, exit_price: float, reason: str) -> float:
         direction = 1 if pos.side == "buy" else -1
         slip = 1 - self.cfg.slippage * direction
         exit_eff = exit_price * slip

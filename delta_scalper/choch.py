@@ -99,6 +99,22 @@ def find_choch_setups(df: pd.DataFrame, k: int) -> list[dict]:
     return setups
 
 
+def last_confirmed_swings(df: pd.DataFrame, k: int):
+    """(last confirmed swing low, last confirmed swing high) as of the
+    final bar — used by the bot's trend-ride exit trail."""
+    h, l = df["high"].values, df["low"].values
+    n = len(df)
+    lo = hi = None
+    for j in range(n - k - 1, k - 1, -1):
+        if lo is None and l[j] == l[j - k: j + k + 1].min():
+            lo = float(l[j])
+        if hi is None and h[j] == h[j - k: j + k + 1].max():
+            hi = float(h[j])
+        if lo is not None and hi is not None:
+            break
+    return lo, hi
+
+
 class ChochFibStrategy:
     """Same interface as the other strategies: signal(closed_candles)."""
 
@@ -206,6 +222,10 @@ class ChochFibStrategy:
         return None
 
     def _make_signal(self, d, entry, stop, tp, stop_d, B, entry_type, expires):
+        # trend-ride mode: no fixed take-profit — the bot exits on a close
+        # through the opposite swing trail (take_profit=0 disables the TP leg)
+        if self.cfg.choch_exit_mode == "trend":
+            tp = 0.0
         return Signal(
             side="buy" if d == 1 else "sell",
             entry_ref=float(entry),
