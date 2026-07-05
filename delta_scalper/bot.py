@@ -21,6 +21,7 @@ from .paper import PaperBroker
 from .risk import RiskManager
 from .choch import ChochFibStrategy
 from .fib import FibRetracementStrategy
+from .riley import RileyReversalStrategy, last_confirmed_swings as riley_last_swings
 from .strategy import TrendPullbackStrategy
 from .structure import MarketStructureStrategy
 
@@ -31,6 +32,7 @@ STRATEGIES = {
     "structure": MarketStructureStrategy,
     "fib": FibRetracementStrategy,
     "choch": ChochFibStrategy,
+    "riley": RileyReversalStrategy,
 }
 
 
@@ -112,8 +114,12 @@ class ScalpingBot:
         log.info("ENTRY signal %s %s %s ref=%.2f sl=%.2f tp=%.2f notional=%.2f",
                  sig.side, sig.entry_type, symbol, sig.entry_ref, sig.stop_loss,
                  sig.take_profit, decision.notional)
-        hold_bars = self.cfg.choch_max_hold_bars \
-            if self.cfg.strategy == "choch" else self.cfg.max_hold_bars
+        if self.cfg.strategy == "choch":
+            hold_bars = self.cfg.choch_max_hold_bars
+        elif self.cfg.strategy == "riley" and self.cfg.riley_exit_mode == "trail":
+            hold_bars = 2000  # trailing rides run for days; don't time-cut them
+        else:
+            hold_bars = self.cfg.max_hold_bars
         max_hold_s = hold_bars * self.cfg.timeframe_minutes * 60
         if self.paper:
             if sig.entry_type == "limit":
@@ -176,6 +182,9 @@ class ScalpingBot:
                     pnl = self._trend_ride_exit(symbol, pos)
                     if pnl is not None:
                         self.risk.record_trade(pnl)
+                elif pos and self.cfg.strategy == "riley" and \
+                        self.cfg.riley_exit_mode == "trail":
+                    self._riley_trail_stop(symbol, pos)
         else:
             # cancel a resting limit entry that outlived its validity window
             deadline = self.live_entry_deadline.get(symbol)
@@ -225,6 +234,22 @@ class ScalpingBot:
             return self.paper.force_close(close, "trend-exit (opposite CHoCH)")
         return None
 
+    def _riley_trail_stop(self, symbol: str, pos):
+        """Swing-ratcheted trailing stop: tighten toward the most recent
+        confirmed swing in the trade's favor, never loosen. Evaluated once
+        per new closed bar."""
+        candles = self.fetch_closed_candles(symbol)
+        if candles.empty:
+            return
+        newest = int(candles["time"].iloc[-1])
+        if self._trail_bar.get(symbol) == newest:
+            return
+        self._trail_bar[symbol] = newest
+        lo, hi = riley_last_swings(candles, self.cfg.riley_swing_k)
+        cand = lo if pos.side == "buy" else hi
+        if cand is not None:
+            self.paper.tighten_stop(cand)
+
     # ---------- main loop ----------
 
     def run_forever(self):
@@ -233,7 +258,7 @@ class ScalpingBot:
         log.info("starting scalping agent [%s] strategy=%s symbols=%s tf=%dm risk/trade=%.2f%%",
                  mode, cfg.strategy, cfg.symbols, cfg.timeframe_minutes,
                  cfg.risk_per_trade * 100)
-        if cfg.strategy in ("structure", "fib", "choch"):
+        if cfg.strategy in ("structure", "fib", "choch", "riley"):
             log.warning("%s strategy: positive but small-sample backtest — "
                         "validate in paper mode before any live size",
                         cfg.strategy)

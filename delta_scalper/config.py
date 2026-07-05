@@ -34,6 +34,9 @@ class Config:
     #                        filter (bigger sample; BTC-validated)
     # "choch":               1h trend-change (CHoCH) swing + fib discount
     #                        entry, 2.618 target (BTC-only validated)
+    # "riley":               BOS + failed-retest reversal with an FVG
+    #                        ("unhealthy move") filter, 15m, swing-trailed
+    #                        exit — validated on both BTC and ETH
     strategy: str = os.environ.get("DELTA_STRATEGY", "pullback")
 
     # --- strategy (walk-forward selected; see backtests/README section in repo README) ---
@@ -107,6 +110,16 @@ class Config:
     # closes with it -> market entry); "limit" = blind limit at the 0.5 level
     choch_entry_mode: str = os.environ.get("DELTA_CHOCH_ENTRY", "candle")
 
+    # --- riley strategy parameters (DELTA_STRATEGY=riley, 15m timeframe) ---
+    # walk-forward validated (both BTC and ETH, k=3 and k=5): FVG filter is
+    # essential — without it, at least one symbol/phase cell goes negative
+    riley_swing_k: int = 5          # fractal half-width
+    riley_fvg_mult: float = 0.5     # required FVG size, in ATRs, in the impulse leg
+    riley_retest_window: int = 12   # bars allowed for the failed-retest bounce
+    riley_fill_window: int = 12     # bars allowed for the breakout entry to trigger
+    riley_exit_mode: str = "trail"  # "trail" (validated best) or "target"
+    riley_r_mult: float = 2.0       # take-profit R-multiple if exit_mode="target"
+
     # --- position sizing mode ---
     # "risk" (default): risk_per_trade% of equity, sized off the stop distance
     # "compound":       stake the FULL balance x compound_leverage every trade
@@ -139,6 +152,8 @@ class Config:
                 self.timeframe_minutes = 5
             elif self.strategy == "choch":
                 self.timeframe_minutes = 60
+            elif self.strategy == "riley":
+                self.timeframe_minutes = 15
         # engulf helps the fixed-target exit but hurts the trend-ride exit
         # (fewer entries starve the compounding); pair defaults accordingly
         if "DELTA_CHOCH_ENGULF" not in os.environ:

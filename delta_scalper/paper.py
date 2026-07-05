@@ -151,6 +151,18 @@ class PaperBroker:
             return None
         return self._close(pos, price, reason)
 
+    def tighten_stop(self, new_stop: float):
+        """Ratchet the open position's stop toward `new_stop` — only ever
+        tightens (moves in the trade's favor), never loosens."""
+        pos = self.account.position
+        if pos is None:
+            return
+        favorable = (new_stop > pos["stop_loss"]) if pos["side"] == "buy" else \
+            (new_stop < pos["stop_loss"])
+        if favorable:
+            pos["stop_loss"] = new_stop
+            self._save()
+
     def _close(self, pos: PaperPosition, exit_price: float, reason: str) -> float:
         direction = 1 if pos.side == "buy" else -1
         slip = 1 - self.cfg.slippage * direction
