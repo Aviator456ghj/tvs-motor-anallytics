@@ -139,6 +139,23 @@ setup examples); ETHUSD did not validate.
 DELTA_STRATEGY=choch DELTA_SYMBOLS=BTCUSD python run_bot.py
 ```
 
+## Fifth strategy: "5-step checklist" (BOS + failed retest + FVG filter)
+
+`DELTA_STRATEGY=riley` is a mechanical translation of a trading-YouTube
+strategy (source in [`reports/riley_report.md`](reports/riley_report.md)):
+trend context from swing structure → a Fair Value Gap ("unhealthy move")
+in the impulsive leg → break of structure → a failed retest of the OLD
+trend (lower high / higher low) → entry on breakdown of that failed
+retest, trading WITH the new direction, exit via a swing-ratcheted
+trailing stop. Unlike the two other externally-sourced strategies tested
+in this repo — QWM and ARC, both fully rejected — **this one passes**:
+positive on both BTCUSD and ETHUSD, in both walk-forward phases, over 540
+days of 15m data, robust across swing widths.
+
+```bash
+DELTA_STRATEGY=riley python run_bot.py
+```
+
 ## Learning from losing trades (the journal)
 
 Winners tell you what worked; losers tell you what to stop doing. Every
