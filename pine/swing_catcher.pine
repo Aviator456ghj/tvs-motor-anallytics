@@ -1,0 +1,150 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Swing Catcher — continuous swing-following strategy
+//
+// The idea: on a higher timeframe (1h), price continuously alternates
+// between a swing low and a swing high. This strategy catches EVERY
+// confirmed turning point and rides to the next one — always in the
+// market, flipping direction at each swing (unlike the CHoCh-based
+// strategies in this repo, which only trade when the TREND changes).
+//
+//   Confirmed swing LOW  -> go LONG,  ride until the next swing HIGH
+//   Confirmed swing HIGH -> go SHORT, ride until the next swing LOW
+//
+// Two entry modes:
+//   Immediate : enter the moment the swing pivot confirms (market)
+//   Confirm   : wait for a reversal candle at the swing (a candle closing
+//               against the new direction, then the next candle closing
+//               with it) before entering — same idea as the golden-zone
+//               confirmation used elsewhere in this repo, applied
+//               directly at the swing point
+//
+// ⚠️ HONESTY NOTE (read before using): backtested on 540 days of 1h
+// BTCUSD/ETHUSD, walk-forward validated. Both modes are profitable on
+// BOTH symbols in BOTH phases at swing width k=5 — but unlike the other
+// strategies in this repo, this one is NOT robust across nearby swing
+// widths: k=3 and k=8 both FAIL on BTCUSD (negative profit factor and
+// return). That is the signature of a possibly narrow/fragile edge, not
+// a broad one. "Immediate" mode's profit is dominated by ETHUSD
+// (+56%/+22% in/out) with BTCUSD only marginally positive (PF ~1.03-1.04);
+// "Confirm" mode is the reverse (BTCUSD PF 1.07/1.30, ETHUSD only
+// marginally positive). Treat this as experimental — paper trade before
+// any size, and keep k=5.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Swing Catcher (Experimental)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+swingK       = input.int(5, "Swing fractal half-width (keep at 5 — validated range)", minval = 2)
+entryMode    = input.string("Immediate", "Entry mode", options = ["Immediate", "Confirm"])
+confirmBars  = input.int(6, "Confirm mode: reversal-candle search window (bars)", minval = 1)
+minDepthATR  = input.float(0.0, "Min swing depth (x ATR, 0 = off)", step = 0.5)
+bufMult      = input.float(0.5, "Stop buffer beyond the swing (x ATR)", step = 0.1)
+riskPct      = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
+maxLev       = input.float(3.0, "Max leverage", step = 0.5)
+
+atr14 = ta.atr(14)
+
+// ───────────────────── swing structure (non-repainting) ─────────────────────
+ph = ta.pivothigh(high, swingK, swingK)
+pl = ta.pivotlow(low, swingK, swingK)
+
+var float lastHigh = na
+var float lastLow  = na
+
+if not na(pl)
+    lastLow := pl
+if not na(ph)
+    lastHigh := ph
+
+// ─────────────────────── "Confirm" mode state machine ────────────────────────
+var bool  waitLong   = false
+var bool  waitShort  = false
+var int   waitDeadline = na
+var float pendingLow  = na
+var float pendingHigh = na
+
+if not na(pl)
+    waitLong := true
+    waitShort := false
+    waitDeadline := bar_index + confirmBars
+    pendingLow := pl
+if not na(ph)
+    waitShort := true
+    waitLong := false
+    waitDeadline := bar_index + confirmBars
+    pendingHigh := ph
+
+confirmLongNow = false
+confirmShortNow = false
+if entryMode == "Confirm"
+    if waitLong and bar_index <= waitDeadline
+        counterRed = close[1] < open[1]
+        nextGreen  = close > open
+        if counterRed and nextGreen
+            confirmLongNow := true
+            waitLong := false
+    if waitShort and bar_index <= waitDeadline
+        counterGreen = close[1] > open[1]
+        nextRed      = close < open
+        if counterGreen and nextRed
+            confirmShortNow := true
+            waitShort := false
+
+// ───────────────────────────── depth filter ──────────────────────────────────
+// Takes the specific swing price being evaluated as a parameter — in
+// "Confirm" mode that's the PENDING swing captured when it originally
+// confirmed, not necessarily the current bar's pivot value.
+depthOkLong(swingPrice) =>
+    minDepthATR <= 0 or (not na(lastHigh) and atr14 > 0 and (lastHigh - swingPrice) / atr14 >= minDepthATR)
+depthOkShort(swingPrice) =>
+    minDepthATR <= 0 or (not na(lastLow) and atr14 > 0 and (swingPrice - lastLow) / atr14 >= minDepthATR)
+
+// ───────────────────────────── entry triggers ────────────────────────────────
+immediateLong  = entryMode == "Immediate" and not na(pl) and depthOkLong(pl)
+immediateShort = entryMode == "Immediate" and not na(ph) and depthOkShort(ph)
+goLong  = immediateLong  or (confirmLongNow  and depthOkLong(pendingLow))
+goShort = immediateShort or (confirmShortNow and depthOkShort(pendingHigh))
+
+// ───────────────────────────── sizing & execution ─────────────────────────────
+if goLong
+    swingRef = entryMode == "Immediate" ? pl : pendingLow
+    stopLvl = swingRef - bufMult * atr14
+    stopDist = close - stopLvl
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Long Stop", "Long", stop = stopLvl)
+
+if goShort
+    swingRef = entryMode == "Immediate" ? ph : pendingHigh
+    stopLvl = swingRef + bufMult * atr14
+    stopDist = stopLvl - close
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Short Stop", "Short", stop = stopLvl)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(lastHigh, "Last swing high", color = color.new(#e34948, 40), style = plot.style_stepline)
+plot(lastLow,  "Last swing low",  color = color.new(#1baf7a, 40), style = plot.style_stepline)
+
+plotshape(goLong, "Catch low -> Long", shape.triangleup, location.belowbar,
+     color.new(#1baf7a, 0), size = size.tiny)
+plotshape(goShort, "Catch high -> Short", shape.triangledown, location.abovebar,
+     color.new(#e34948, 0), size = size.tiny)
+plotshape(waitLong and entryMode == "Confirm", "Waiting: confirm long", shape.labelup,
+     location.belowbar, color.new(#eda100, 0), size = size.tiny, text = "wait",
+     textcolor = color.white)
+plotshape(waitShort and entryMode == "Confirm", "Waiting: confirm short", shape.labeldown,
+     location.abovebar, color.new(#eda100, 0), size = size.tiny, text = "wait",
+     textcolor = color.white)
