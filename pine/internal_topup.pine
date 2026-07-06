@@ -56,10 +56,14 @@ atr14 = ta.atr(14)
 //   was broken upward; bearish mirrors with lows. The OLD bias ends the
 //   instant the OPPOSITE break happens (even before that opposite bias is
 //   itself "ready") — that gap is intentionally a flat/neutral zone.
-var float h1 = na, h2 = na
-var int   h1_bar = na, h2_bar = na
-var float l1 = na, l2 = na
-var int   l1_bar = na, l2_bar = na
+var float h1 = na
+var float h2 = na
+var int   h1_bar = na
+var int   h2_bar = na
+var float l1 = na
+var float l2 = na
+var int   l1_bar = na
+var int   l2_bar = na
 var int   pendingUpBreakBar = na
 var int   pendingDnBreakBar = na
 var int   macroBias = 0

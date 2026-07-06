@@ -3,35 +3,41 @@
 // Waqar Asim "Top Down Analysis" — pullback re-entry (Experimental)
 //
 // Mechanical translation of the video's 5-step framework:
-//   1) 1h  : external range A->B of a confirmed CHoCH/BOS (same detection
-//            style as this repo's other CHoCH scripts).
-//   2) 15m : 2-leg pullback signature after B -- a 15m swing that FAILS to
-//            exceed B (lower high in an uptrend / higher low in a
-//            downtrend), then a 15m swing that breaks the prior 15m swing
-//            of the ORIGINAL trend's kind (lower low / higher high).
-//   3) Objective = the 50% retracement of the 1h external range (A,B).
+//   1) External range A->B of a confirmed CHoCH/BOS (swing width kExt).
+//   2) 2-leg pullback signature after B, at a FINER swing width kLeg -- a
+//      swing that FAILS to exceed B (lower high in an uptrend / higher low
+//      in a downtrend), then a swing that breaks the prior same-direction
+//      swing (lower low / higher high). Confirms the pullback has begun.
+//   3) Objective = the 50% retracement of the external range (A,B).
 //   4) Entry: once price touches that 50% level, a counter candle followed
-//      by an engulfing confirmation candle (WITH the original 1h
-//      direction) triggers entry -- the video's own fallback ("a simple
-//      3-candle engulfing") since true 1-minute confirmation isn't
-//      reproducible mechanically here.
-//   5) Exit: ride until the 1h trend itself ends (the next opposite 1h
-//      CHoCH) -- the video's "leaving a runner for the larger external
-//      trend continuation".
+//      by an engulfing confirmation candle (WITH the original direction)
+//      triggers entry -- the video's own fallback ("a simple 3-candle
+//      engulfing"), since true cross-timeframe confirmation isn't
+//      reproducible as a single compiling Pine script (see note below).
+//   5) Exit: ride until the external trend itself ends (the next opposite
+//      CHoCH) -- the video's "leaving a runner for the larger trend".
 //
-// ⚠️ HONESTY NOTE: backtested on 540 days of 1h/15m BTCUSD/ETHUSD. The
-// RIDE exit (this script's only exit mode) is profitable on BOTH symbols
-// (BTC PF 1.35, +10%; ETH PF 2.64, +96%) -- but the video's own literal
-// "1:3 partial take-profit" version is markedly weaker and NEGATIVE on
-// ETH, so this script deliberately does NOT offer a fixed-R exit as the
-// default. ETH's return is also concentration-heavy: a handful of huge
-// trend-continuation trades (several 20-40R) drive most of the total —
-// low win rate (~28%), lumpy, requires discipline to hold. The 1h
-// A/B (external range) approximation uses the LAST confirmed swing
-// low/high before the break as "A", a simpler proxy than a full
-// min/max-since-prior-swing search — a disclosed mechanical
-// simplification, same spirit as other ports in this repo. Paper trade
-// before any size.
+// ⚠️ SINGLE-TIMEFRAME SIMPLIFICATION: the original backtest used REAL 1h
+// (external range) + 15m (pullback leg) data. An earlier version of this
+// script tried to reproduce that exactly via request.security() pulling a
+// stateful 1h function into a 15m chart -- that does NOT compile: Pine
+// disallows request.security() on a user function that contains var/varip
+// state. This version collapses both steps onto ONE chart using two swing
+// widths (kExt = external/coarse, kLeg = pullback-leg/fine), the same
+// pattern already used successfully in internal_topup.pine. Recommended:
+// run on the 1-HOUR chart with the defaults below (kExt=5 matches what was
+// backtested; kLeg=2 approximates the finer 15m structure on this single
+// timeframe). Behavior will be directionally similar to, but not numerically
+// identical to, the reported backtest (PF 1.35/+10% BTC, PF 2.64/+96% ETH
+// in "ride" mode, on real separate 1h+15m data) -- compare against the
+// chart before trusting it, and paper trade first.
+//
+// ⚠️ HONESTY NOTE ON THE EDGE ITSELF: the video's own literal "1:3 partial
+// take-profit" exit was weak/negative on ETH in backtesting -- only the
+// ride-to-next-CHoCH exit passed on both symbols, so that's the only exit
+// mode here. ETH's backtested return was also concentration-heavy (a
+// handful of 20-40R trend-continuation trades drove most of the total on
+// a ~28% win rate) -- lumpy, requires discipline to hold through losers.
 // ─────────────────────────────────────────────────────────────────────────────
 strategy("Waqar Top-Down Pullback Re-Entry (Experimental)",
      overlay = true,
@@ -44,136 +50,134 @@ strategy("Waqar Top-Down Pullback Re-Entry (Experimental)",
      process_orders_on_close = true)
 
 // ───────────────────────────── inputs ────────────────────────────────────────
-htfTF     = input.timeframe("60", "External range timeframe (1h)")
-kHtf      = input.int(5, "1h swing width (k)", minval = 3, maxval = 12)
-kLtf      = input.int(3, "15m pullback-leg swing width (k)", minval = 2, maxval = 8)
+kExt      = input.int(5, "External range swing width (kExt) — run on 1h", minval = 3, maxval = 12)
+kLeg      = input.int(2, "Pullback-leg swing width (kLeg, finer)", minval = 1, maxval = 6)
 bufAtr    = input.float(0.3, "Stop buffer beyond touch (x ATR)", step = 0.1)
 riskPct   = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
 maxLev    = input.float(3.0, "Max leverage", step = 0.5)
 
-// NOTE: this script must run on a 15-MINUTE chart (matches what was
-// actually backtested: 15m used for both the pullback signature AND the
-// entry confirmation). The 1h external range is pulled in via
-// request.security below.
 atr14 = ta.atr(14)
 
-// ───────────────────── 1h external-range CHoCH (imported via security) ──────
-htf_state() =>
-    var float h1 = na, h2 = na
-    var int   h1_bar = na, h2_bar = na
-    var float l1 = na, l2 = na
-    var int   l1_bar = na, l2_bar = na
-    var int   pendingUpBreakBar = na
-    var int   pendingDnBreakBar = na
-    var float pendingA_up = na, pendingA_dn = na
-    var int   dir = 0
-    var float A = na
-    var float B = na
+// ───────────────────── external-range CHoCH (A, B, dir) ──────────────────────
+var float h1 = na
+var float h2 = na
+var int   h1_bar = na
+var int   h2_bar = na
+var float l1 = na
+var float l2 = na
+var int   l1_bar = na
+var int   l2_bar = na
+var int   pendingUpBreakBar = na
+var int   pendingDnBreakBar = na
+var float pendingA_up = na
+var float pendingA_dn = na
+var int   dir = 0
+var float extA = na
+var float extB = na
 
-    ph = ta.pivothigh(kHtf, kHtf)
-    pl = ta.pivotlow(kHtf, kHtf)
+ph = ta.pivothigh(high, kExt, kExt)
+pl = ta.pivotlow(low, kExt, kExt)
 
-    if not na(ph)
-        atBarH = bar_index - kHtf
-        if not na(pendingUpBreakBar) and atBarH > pendingUpBreakBar
-            dir := 1
-            A := pendingA_up
-            B := ph
-            pendingUpBreakBar := na
-        h2 := h1
-        h2_bar := h1_bar
-        h1 := ph
-        h1_bar := atBarH
+if not na(ph)
+    atBarH = bar_index - kExt
+    if not na(pendingUpBreakBar) and atBarH > pendingUpBreakBar
+        dir := 1
+        extA := pendingA_up
+        extB := ph
+        pendingUpBreakBar := na
+    h2 := h1
+    h2_bar := h1_bar
+    h1 := ph
+    h1_bar := atBarH
 
-    if not na(pl)
-        atBarL = bar_index - kHtf
-        if not na(pendingDnBreakBar) and atBarL > pendingDnBreakBar
-            dir := -1
-            A := pendingA_dn
-            B := pl
-            pendingDnBreakBar := na
-        l2 := l1
-        l2_bar := l1_bar
-        l1 := pl
-        l1_bar := atBarL
+if not na(pl)
+    atBarL = bar_index - kExt
+    if not na(pendingDnBreakBar) and atBarL > pendingDnBreakBar
+        dir := -1
+        extA := pendingA_dn
+        extB := pl
+        pendingDnBreakBar := na
+    l2 := l1
+    l2_bar := l1_bar
+    l1 := pl
+    l1_bar := atBarL
 
-    if not na(h1) and not na(h2) and na(pendingUpBreakBar) and h1 < h2 and close > h1 and bar_index > h1_bar
-        pendingUpBreakBar := bar_index
-        pendingA_up := l1
-        if dir == -1
-            dir := 0
-    if not na(l1) and not na(l2) and na(pendingDnBreakBar) and l1 > l2 and close < l1 and bar_index > l1_bar
-        pendingDnBreakBar := bar_index
-        pendingA_dn := h1
-        if dir == 1
-            dir := 0
+if not na(h1) and not na(h2) and na(pendingUpBreakBar) and h1 < h2 and close > h1 and bar_index > h1_bar
+    pendingUpBreakBar := bar_index
+    pendingA_up := l1
+    if dir == -1
+        dir := 0
 
-    [dir, A, B]
+if not na(l1) and not na(l2) and na(pendingDnBreakBar) and l1 > l2 and close < l1 and bar_index > l1_bar
+    pendingDnBreakBar := bar_index
+    pendingA_dn := h1
+    if dir == 1
+        dir := 0
 
-[dir1h, A1h, B1h] = request.security(syminfo.tickerid, htfTF, htf_state(), lookahead = barmerge.lookahead_off)
+// ───────────────────── pullback-leg swings (finer width) ────────────────────
+phL = ta.pivothigh(high, kLeg, kLeg)
+plL = ta.pivotlow(low, kLeg, kLeg)
 
-// ───────────────────── 15m: 2-leg pullback signature (native) ───────────────
-ph15 = ta.pivothigh(kLtf, kLtf)
-pl15 = ta.pivotlow(kLtf, kLtf)
-
-var int   lastDir       = 0
-var bool  failedSeen    = false
-var float priorSameKind = na
-var bool  sigDone       = false
-var bool  waitingEntry  = false
+var int   lastDir        = 0
+var bool  failedSeen     = false
+var float priorSameKind  = na
+var bool  sigDone        = false
+var bool  waitingEntry   = false
 var bool  pendingCounter = false
-var float counterOpen   = na
+var float counterOpen    = na
 
-if dir1h != lastDir
+if dir != lastDir
     failedSeen := false
     priorSameKind := na
     sigDone := false
     waitingEntry := false
     pendingCounter := false
-    lastDir := dir1h
+    lastDir := dir
 
-if dir1h == 1 and not na(B1h)
-    if not na(ph15)
-        failedSeen := ph15 < B1h
-    if not na(pl15)
+if dir == 1 and not na(extB)
+    if not na(phL)
+        failedSeen := phL < extB
+    if not na(plL)
         if failedSeen and not sigDone
-            if not na(priorSameKind) and pl15 < priorSameKind
+            if not na(priorSameKind) and plL < priorSameKind
                 sigDone := true
-            priorSameKind := pl15
+            priorSameKind := plL
         else if not failedSeen
-            priorSameKind := pl15
-else if dir1h == -1 and not na(B1h)
-    if not na(pl15)
-        failedSeen := pl15 > B1h
-    if not na(ph15)
+            priorSameKind := plL
+else if dir == -1 and not na(extB)
+    if not na(plL)
+        failedSeen := plL > extB
+    if not na(phL)
         if failedSeen and not sigDone
-            if not na(priorSameKind) and ph15 > priorSameKind
+            if not na(priorSameKind) and phL > priorSameKind
                 sigDone := true
-            priorSameKind := ph15
+            priorSameKind := phL
         else if not failedSeen
-            priorSameKind := ph15
+            priorSameKind := phL
 
 if sigDone and not waitingEntry
     waitingEntry := true
 
 // ───────────────────── objective touch + engulf entry confirmation ──────────
-mid1h = (not na(A1h) and not na(B1h)) ? (A1h + B1h) / 2.0 : na
+float mid = na
+if not na(extA) and not na(extB)
+    mid := (extA + extB) / 2.0
 
 sigLong  = false
 sigShort = false
 
-if waitingEntry and not na(mid1h) and not pendingCounter
-    touched = dir1h == 1 ? (low <= mid1h) : (high >= mid1h)
-    counter = dir1h == 1 ? (close < open) : (close > open)
+if waitingEntry and not na(mid) and not pendingCounter
+    touched = dir == 1 ? (low <= mid) : (high >= mid)
+    counter = dir == 1 ? (close < open) : (close > open)
     if touched and counter
         pendingCounter := true
         counterOpen := open
 
 if pendingCounter
-    confDir  = dir1h == 1 ? (close > open) : (close < open)
-    engulfOk = dir1h == 1 ? (close > counterOpen) : (close < counterOpen)
+    confDir  = dir == 1 ? (close > open) : (close < open)
+    engulfOk = dir == 1 ? (close > counterOpen) : (close < counterOpen)
     if confDir and engulfOk
-        if dir1h == 1
+        if dir == 1
             sigLong := true
         else
             sigShort := true
@@ -183,15 +187,15 @@ if pendingCounter
     else if not confDir
         pendingCounter := false
 
-// ───────────────────────────── exits (ride the 1h trend) ─────────────────────
-if strategy.position_size > 0 and dir1h != 1
-    strategy.close("Long", comment = "1h trend ended")
-if strategy.position_size < 0 and dir1h != -1
-    strategy.close("Short", comment = "1h trend ended")
+// ───────────────────────────── exits (ride the external trend) ───────────────
+if strategy.position_size > 0 and dir != 1
+    strategy.close("Long", comment = "trend ended")
+if strategy.position_size < 0 and dir != -1
+    strategy.close("Short", comment = "trend ended")
 
 // ───────────────────────────── entries ────────────────────────────────────────
-if sigLong and strategy.position_size == 0 and not na(A1h)
-    stopLvl  = math.min(low, A1h) - bufAtr * atr14
+if sigLong and strategy.position_size == 0 and not na(extA)
+    stopLvl  = math.min(low, extA) - bufAtr * atr14
     stopDist = close - stopLvl
     if stopDist > 0
         qtyRisk = strategy.equity * riskPct / 100 / stopDist
@@ -199,8 +203,8 @@ if sigLong and strategy.position_size == 0 and not na(A1h)
         strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
         strategy.exit("Long Stop", "Long", stop = stopLvl)
 
-if sigShort and strategy.position_size == 0 and not na(A1h)
-    stopLvl  = math.max(high, A1h) + bufAtr * atr14
+if sigShort and strategy.position_size == 0 and not na(extA)
+    stopLvl  = math.max(high, extA) + bufAtr * atr14
     stopDist = stopLvl - close
     if stopDist > 0
         qtyRisk = strategy.equity * riskPct / 100 / stopDist
@@ -209,9 +213,9 @@ if sigShort and strategy.position_size == 0 and not na(A1h)
         strategy.exit("Short Stop", "Short", stop = stopLvl)
 
 // ───────────────────────────── visuals ───────────────────────────────────────
-plot(A1h, "External origin (A, 1h)", color = color.new(#898781, 30), style = plot.style_stepline)
-plot(B1h, "External peak (B, 1h)",   color = color.new(#898781, 30), style = plot.style_stepline)
-plot(mid1h, "50% objective", color = color.new(#eda100, 0), style = plot.style_stepline, linewidth = 2)
+plot(extA, "External origin (A)", color = color.new(#898781, 30), style = plot.style_stepline)
+plot(extB, "External peak (B)",   color = color.new(#898781, 30), style = plot.style_stepline)
+plot(mid, "50% objective", color = color.new(#eda100, 0), style = plot.style_stepline, linewidth = 2)
 
 plotshape(sigLong, "Pullback long entry", shape.triangleup, location.belowbar,
      color.new(#1baf7a, 0), size = size.small)
@@ -222,11 +226,11 @@ plotshape(waitingEntry and not pendingCounter, "Waiting for objective touch", sh
 
 var table info = table.new(position.top_right, 2, 3, bgcolor = color.new(color.black, 65), border_width = 1)
 if barstate.islast
-    table.cell(info, 0, 0, "1h bias", text_color = color.white, text_size = size.small)
-    table.cell(info, 1, 0, dir1h == 1 ? "BULLISH" : dir1h == -1 ? "BEARISH" : "NEUTRAL",
-         text_color = dir1h == 1 ? color.new(#1baf7a,0) : dir1h == -1 ? color.new(#e34948,0) : color.gray, text_size = size.small)
+    table.cell(info, 0, 0, "Bias", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, dir == 1 ? "BULLISH" : dir == -1 ? "BEARISH" : "NEUTRAL",
+         text_color = dir == 1 ? color.new(#1baf7a, 0) : dir == -1 ? color.new(#e34948, 0) : color.gray, text_size = size.small)
     table.cell(info, 0, 1, "Signature", text_color = color.white, text_size = size.tiny)
     table.cell(info, 1, 1, sigDone or waitingEntry ? "confirmed, watching" : "waiting", text_color = color.yellow, text_size = size.tiny)
     table.cell(info, 0, 2, "Position", text_color = color.white, text_size = size.tiny)
     table.cell(info, 1, 2, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
-         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.tiny)
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a, 0) : strategy.position_size < 0 ? color.new(#e34948, 0) : color.gray, text_size = size.tiny)

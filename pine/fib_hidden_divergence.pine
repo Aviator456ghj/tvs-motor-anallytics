@@ -55,10 +55,14 @@ ph = ta.pivothigh(prd, prd)
 pl = ta.pivotlow(prd, prd)
 
 // ─────────────────── 2-slot swing memory (A, B) + RSI at each swing ──────────
-var float s2price = na, s1price = na
-var int   s2atbar = na, s1atbar = na
-var string s2kind = na, s1kind = na
-var float s2rsi = na, s1rsi = na
+var float s2price = na
+var float s1price = na
+var int   s2atbar = na
+var int   s1atbar = na
+var string s2kind = na
+var string s1kind = na
+var float s2rsi = na
+var float s1rsi = na
 
 checkAndShift(string kind, float price, int atbar, float rsiAtSwing) =>
     bool doLong  = false
