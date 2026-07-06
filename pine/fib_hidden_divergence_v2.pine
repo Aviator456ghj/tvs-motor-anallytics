@@ -1,0 +1,162 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Fib Golden Zone + RSI Hidden Divergence — v2 (+ Part 2 failure-analysis filter)
+//
+// Part 1 (fib_hidden_divergence.pine, unchanged, always active): A = swing
+// low, B = swing high after it, C = the next swing low after B (C > A). If
+// C retraces into the golden zone (0.5-0.786 of A->B) AND RSI at C is lower
+// than RSI at A (hidden bullish divergence), go long. Mirror for shorts.
+// Ride until the next opposite-kind swing confirms. Baseline: BTC PF 1.09
+// / ETH PF 1.07, modest but real.
+//
+// Part 2 (new, toggleable): root-cause failure analysis on 228 pooled
+// BTC+ETH Part-1 trades found most features were noise, but two were real:
+//   1) LEG SIZE: the A->B reversal leg must be >= `minLegAtr` x ATR. Tiny,
+//      noisy legs underperform -- bottom quartile scored 21.1% win rate /
+//      -0.21R avg vs the rest.
+//   2) DEEP RETRACEMENT: C must retrace to at least `minRetr` of the A->B
+//      leg (closer to the 0.786 edge, not just barely past 0.5). Bucketed
+//      win rate/avg-R rose monotonically from the shallow quartile (26.3%
+//      wr, -0.40R avg) to the deep quartile (38.2% wr, +0.33R avg).
+//
+// Validated together, full-period BTC+ETH, 1h:
+//   BTCUSD: 112 -> 53 trades,  PF 1.09 -> 1.66,  return +2%  -> +6%
+//   ETHUSD: 116 -> 51 trades,  PF 1.07 -> 2.00,  return +2%  -> +10%
+// Both PF and return improved on both symbols. Still a smaller-sample edge
+// than Riley's Part 2 (51-53 trades vs 84-115) -- treat with proportionally
+// more caution, and paper trade before any size.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Fib Golden Zone + RSI Hidden Divergence v2",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+prd       = input.int(3, "Swing width (k) — validated", minval = 2, maxval = 10, group = "Part 1 — golden zone + hidden divergence")
+goldenLo  = input.float(0.5,   "Golden zone low", minval = 0.1, maxval = 0.9, step = 0.01, group = "Part 1 — golden zone + hidden divergence")
+goldenHi  = input.float(0.786, "Golden zone high", minval = 0.1, maxval = 0.95, step = 0.001, group = "Part 1 — golden zone + hidden divergence")
+bufMult   = input.float(0.3, "Stop buffer beyond swing C (x ATR)", step = 0.1, group = "Part 1 — golden zone + hidden divergence")
+riskPct   = input.float(0.5, "Risk per trade (% equity)", step = 0.1, group = "Part 1 — golden zone + hidden divergence")
+maxLev    = input.float(3.0, "Max leverage", step = 0.5, group = "Part 1 — golden zone + hidden divergence")
+
+useP2     = input.bool(true, "Enable Part 2 (min leg size + deep retracement)", group = "Part 2 — failure-analysis filter",
+     tooltip = "Turn off to run pure Part 1 (same as fib_hidden_divergence.pine v1). Turn on for the validated PF 1.09->1.66 (BTC) / 1.07->2.00 (ETH) improvement.")
+minLegAtr = input.float(2.56, "Min A->B leg size (x ATR)", step = 0.1, group = "Part 2 — failure-analysis filter",
+     tooltip = "The validated 'leg size' rule — tiny/noisy reversal legs underperform. Only applies when Part 2 is enabled.")
+minRetr   = input.float(0.65, "Min retracement depth (0-1)", minval = 0.1, maxval = 0.95, step = 0.01, group = "Part 2 — failure-analysis filter",
+     tooltip = "The validated 'deep retracement' rule — shallow pullbacks near 0.5 are weak; require closer to the 0.786 edge. Only applies when Part 2 is enabled.")
+
+atr14 = ta.atr(14)
+rsi14 = ta.rsi(close, 14)
+
+ph = ta.pivothigh(prd, prd)
+pl = ta.pivotlow(prd, prd)
+
+// ─────────────────── 2-slot swing memory (A, B) + RSI at each swing ──────────
+var float s2price = na
+var float s1price = na
+var int   s2atbar = na
+var int   s1atbar = na
+var string s2kind = na
+var string s1kind = na
+var float s2rsi = na
+var float s1rsi = na
+
+checkAndShift(string kind, float price, int atbar, float rsiAtSwing, float atrNow, bool part2On, float legAtrMin, float retrMin) =>
+    bool doLong  = false
+    bool doShort = false
+    float stopRef = na
+    if not na(s2price) and not na(s1price) and kind == s2kind and s1kind != s2kind
+        float pxA = s2price
+        float pxB = s1price
+        float pxC = price
+        float rsiA = s2rsi
+        float rsiC = rsiAtSwing
+        float rng = math.abs(pxB - pxA)
+        if rng > 0
+            float retr = math.abs(pxB - pxC) / rng
+            float legAtr = atrNow > 0 ? rng / atrNow : 0.0
+            bool p2ok = not part2On or (legAtr >= legAtrMin and retr >= retrMin)
+            if retr >= goldenLo and retr <= goldenHi and p2ok
+                if kind == "L" and pxC > pxA and rsiC < rsiA
+                    doLong := true
+                    stopRef := pxC
+                if kind == "H" and pxC < pxA and rsiC > rsiA
+                    doShort := true
+                    stopRef := pxC
+    s2price := s1price
+    s2atbar := s1atbar
+    s2kind  := s1kind
+    s2rsi   := s1rsi
+    s1price := price
+    s1atbar := atbar
+    s1kind  := kind
+    s1rsi   := rsiAtSwing
+    [doLong, doShort, stopRef]
+
+sigLong  = false
+sigShort = false
+float stopRef = na
+
+if not na(ph)
+    [dl, ds, sr] = checkAndShift("H", ph, bar_index - prd, rsi14[prd], atr14, useP2, minLegAtr, minRetr)
+    sigLong  := sigLong or dl
+    sigShort := sigShort or ds
+    if dl or ds
+        stopRef := sr
+if not na(pl)
+    [dl, ds, sr] = checkAndShift("L", pl, bar_index - prd, rsi14[prd], atr14, useP2, minLegAtr, minRetr)
+    sigLong  := sigLong or dl
+    sigShort := sigShort or ds
+    if dl or ds
+        stopRef := sr
+
+// ───────────────────────────── exits (ride to opposite swing) ────────────────
+if strategy.position_size > 0 and not na(ph)
+    strategy.close("Long", comment = "opposite swing formed")
+if strategy.position_size < 0 and not na(pl)
+    strategy.close("Short", comment = "opposite swing formed")
+
+// ───────────────────────────── entries ────────────────────────────────────────
+if sigLong and strategy.position_size == 0
+    stopLvl  = stopRef - bufMult * atr14
+    stopDist = close - stopLvl
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Long Stop", "Long", stop = stopLvl)
+
+if sigShort and strategy.position_size == 0
+    stopLvl  = stopRef + bufMult * atr14
+    stopDist = stopLvl - close
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Short Stop", "Short", stop = stopLvl)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(ph, "Swing high", color = color.new(#e34948, 40), style = plot.style_circles, offset = -prd)
+plot(pl, "Swing low",  color = color.new(#1baf7a, 40), style = plot.style_circles, offset = -prd)
+
+plotshape(sigLong, "Long: golden zone + hidden bull div", shape.triangleup, location.belowbar,
+     color.new(#1baf7a, 0), size = size.small)
+plotshape(sigShort, "Short: golden zone + hidden bear div", shape.triangledown, location.abovebar,
+     color.new(#e34948, 0), size = size.small)
+
+var table info = table.new(position.top_right, 2, 3, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Part 1", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, "always active", text_color = color.new(#1baf7a, 0), text_size = size.small)
+    table.cell(info, 0, 1, "Part 2", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 1, useP2 ? "ON (leg size + deep retr)" : "OFF (Part 1 only)",
+         text_color = useP2 ? color.new(#1baf7a, 0) : color.gray, text_size = size.small)
+    table.cell(info, 0, 2, "Position", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 2, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.tiny)
