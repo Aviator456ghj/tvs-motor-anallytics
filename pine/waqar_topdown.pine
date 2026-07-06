@@ -82,6 +82,9 @@ var float pendingA_dn = na
 var int   dir = 0
 var float extA = na
 var float extB = na
+var int   dirFlipCount = 0
+var int   sigDoneCount = 0
+var int   entryCount   = 0
 
 ph = ta.pivothigh(high, kExt, kExt)
 pl = ta.pivotlow(low, kExt, kExt)
@@ -93,6 +96,7 @@ if not na(ph)
         extA := pendingA_up
         extB := ph
         pendingUpBreakBar := na
+        dirFlipCount += 1
     h2 := h1
     h2_bar := h1_bar
     h1 := ph
@@ -105,6 +109,7 @@ if not na(pl)
         extA := pendingA_dn
         extB := pl
         pendingDnBreakBar := na
+        dirFlipCount += 1
     l2 := l1
     l2_bar := l1_bar
     l1 := pl
@@ -149,6 +154,7 @@ if dir == 1 and not na(extB)
         if failedSeen and not sigDone
             if not na(priorSameKind) and plL < priorSameKind
                 sigDone := true
+                sigDoneCount += 1
             priorSameKind := plL
         else if not failedSeen
             priorSameKind := plL
@@ -159,6 +165,7 @@ else if dir == -1 and not na(extB)
         if failedSeen and not sigDone
             if not na(priorSameKind) and phL > priorSameKind
                 sigDone := true
+                sigDoneCount += 1
             priorSameKind := phL
         else if not failedSeen
             priorSameKind := phL
@@ -189,6 +196,7 @@ if pendingCounter
             sigLong := true
         else
             sigShort := true
+        entryCount += 1
         pendingCounter := false
         waitingEntry := false
         sigDone := false
@@ -239,7 +247,7 @@ plotshape(sigShort, "Pullback short entry", shape.triangledown, location.aboveba
 plotshape(waitingEntry and not pendingCounter, "Waiting for objective touch", shape.circle,
      location.belowbar, color.new(#2a78d6, 40), size = size.tiny)
 
-var table info = table.new(position.top_right, 2, 3, bgcolor = color.new(color.black, 65), border_width = 1)
+var table info = table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 65), border_width = 1)
 if barstate.islast
     table.cell(info, 0, 0, "Bias", text_color = color.white, text_size = size.small)
     table.cell(info, 1, 0, dir == 1 ? "BULLISH" : dir == -1 ? "BEARISH" : "NEUTRAL",
@@ -249,3 +257,9 @@ if barstate.islast
     table.cell(info, 0, 2, "Position", text_color = color.white, text_size = size.tiny)
     table.cell(info, 1, 2, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
          text_color = strategy.position_size > 0 ? color.new(#1baf7a, 0) : strategy.position_size < 0 ? color.new(#e34948, 0) : color.gray, text_size = size.tiny)
+    table.cell(info, 0, 3, "Bias flips (total)", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 3, str.tostring(dirFlipCount), text_color = color.aqua, text_size = size.tiny)
+    table.cell(info, 0, 4, "Signatures (total)", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 4, str.tostring(sigDoneCount), text_color = color.aqua, text_size = size.tiny)
+    table.cell(info, 0, 5, "Entries (total)", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 5, str.tostring(entryCount), text_color = color.aqua, text_size = size.tiny)
