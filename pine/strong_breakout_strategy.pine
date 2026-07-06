@@ -1,0 +1,364 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Strong Breakout Signals — STRATEGY VERSION
+//
+// Same concept and same two loophole fixes as strong_breakout_signals_patched
+// (off-by-one pivot count in the clustered-zone engine; ratcheted stop), but
+// converted from `indicator()` to `strategy()` with REAL strategy.entry /
+// strategy.exit orders.
+//
+// Why this file exists: the original/patched scripts are `indicator()`
+// scripts that hand-simulate trades with their own arrays/boxes and a
+// custom on-chart dashboard. That dashboard LOOKS like a performance
+// report, but TradingView's actual "Strategy Tester" tab (Overview /
+// Performance Summary / List of Trades) only populates for a script
+// declared with `strategy()` that places real broker-emulator orders via
+// strategy.entry/strategy.exit -- an indicator() can never fill that tab,
+// no matter what you paste into it. This file places real orders so the
+// native Strategy Tester report works.
+//
+// Simplified vs. the indicator version: the hand-rolled historical trade
+// ledger (boxes/lines/labels per past trade) and the custom dashboard table
+// are removed -- the Strategy Tester's own Performance Summary and List of
+// Trades replace them exactly, natively, with no risk of the two disagreeing.
+// The live zone box + signal label are kept for on-chart context. Entry/exit
+// logic (Engine A + Engine B + strength score + HTF filter + cooldown) is
+// unchanged from the patched indicator.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Strong Breakout Signals (Strategy)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+gEng = "01 · Breakout Engine"
+prd          = input.int(5,   "Pivot Period",            minval = 2,  maxval = 50,  group = gEng, tooltip = "Bars on each side for pivot detection. Larger = fewer, more significant swings.")
+maxZoneHist  = input.int(200, "Max Zone History (bars)", minval = 30, maxval = 500, group = gEng, tooltip = "How far back stored pivots are kept for the clustered-zone engine.")
+minTests     = input.int(2,   "Min Pivot Tests",         minval = 2,  maxval = 8,   group = gEng, tooltip = "A clustered zone must have at least this many pivots inside the band to count as a real tested level.")
+bosConfirm   = input.string("Close", "Break Confirmation", options = ["Close", "Wick"], group = gEng, tooltip = "Confirm structure breaks on candle close (stricter) or wick (earlier).")
+useZone      = input.bool(true, "Use Clustered-Zone Breaks", group = gEng, tooltip = "Engine A: break of a multi-pivot tested S/R wall.")
+useStructure = input.bool(true, "Use Market-Structure Breaks", group = gEng, tooltip = "Engine B: break of the most recent swing high/low (BOS / CHoCH).")
+showCHoCH    = input.bool(true, "Tag CHoCH (character change)", group = gEng, tooltip = "Label a break that flips the prior break direction as CHoCH instead of BOS.")
+
+gZone = "02 · Zone Geometry"
+zoneAtrMult  = input.float(0.5, "Zone Band Width (× ATR)", minval = 0.1, maxval = 5.0, step = 0.1, group = gZone, tooltip = "Thickness of the tested-zone band and the strength-shaded zone box, in ATR. Universal across symbols.")
+
+gStr = "03 · Strength Filter"
+minStr       = input.int(4, "Min Strength To Signal (0-10)", minval = 0, maxval = 10, group = gStr, tooltip = "Reject breakouts scoring below this on the 0-10 engine.")
+onlyStrong   = input.bool(false, "Only Show Strong Signals", group = gStr, tooltip = "Extra filter on top of Min Strength.")
+strongThr    = input.float(7.0, "Strong Threshold (score)", minval = 0, maxval = 10, step = 0.5, group = gStr)
+
+gTrade = "04 · Trade Levels & Sizing"
+atrLen       = input.int(14, "ATR Length", minval = 1, group = gTrade)
+slBufAtr     = input.float(0.30, "Stop Buffer Beyond Zone (ATR)", minval = 0.0, maxval = 3.0, step = 0.05, group = gTrade, tooltip = "Stop sits beyond the broken zone by this ATR cushion.")
+maxRiskAtr   = input.float(4.0, "Max Risk (ATR) — stop cap",  minval = 0.5, maxval = 12.0, step = 0.1, group = gTrade, tooltip = "Hard cap on stop distance so a structural stop never becomes a 'wide stop'.")
+minRiskAtr   = input.float(0.5, "Min Risk (ATR) — stop floor", minval = 0.1, maxval = 6.0,  step = 0.1, group = gTrade, tooltip = "Floor on stop distance so the 1R target never becomes a 'tight TP'.")
+tp1R         = input.float(1.0, "TP1 (R)", minval = 0.5, maxval = 50, step = 0.1, group = gTrade)
+tp2R         = input.float(2.0, "TP2 (R)", minval = 0.5, maxval = 50, step = 0.1, group = gTrade)
+tp3R         = input.float(3.0, "TP3 (R)", minval = 0.5, maxval = 50, step = 0.1, group = gTrade)
+tp1Pct       = input.float(34, "TP1 size (% of position)", minval = 1, maxval = 98, step = 1, group = gTrade)
+tp2Pct       = input.float(50, "TP2 size (% of REMAINING position)", minval = 1, maxval = 98, step = 1, group = gTrade)
+riskPct      = input.float(0.5, "Risk per trade (% equity)", minval = 0.05, step = 0.05, group = gTrade)
+maxLev       = input.float(3.0, "Max leverage", minval = 0.5, step = 0.5, group = gTrade)
+
+gFilt = "05 · Filters"
+useHtf       = input.bool(true,  "HTF Trend Alignment (block counter-trend)", group = gFilt, tooltip = "Only LONG breakouts above the HTF EMA, only SHORT below it.")
+htfTF        = input.timeframe("240", "HTF Timeframe", group = gFilt)
+htfEmaLen    = input.int(50, "HTF EMA Length", minval = 5, maxval = 500, group = gFilt)
+useCooldown  = input.bool(true, "Use Signal Cooldown", group = gFilt)
+cooldownBars = input.int(10, "Cooldown Bars", minval = 1, maxval = 500, group = gFilt, tooltip = "Minimum bars between consecutive entries.")
+
+gVis = "06 · Visuals"
+theme        = input.string("Emerald", "Color Theme", options = ["Emerald", "Ice Blue", "Gold Black", "Aqua Violet"], group = gVis)
+showSignal   = input.bool(true, "Show Signal Labels", group = gVis)
+showStars    = input.bool(true, "Show ★ Ranking On Labels", group = gVis)
+showZone     = input.bool(true, "Show Strength-Shaded Zone", group = gVis)
+showZoneLbl  = input.bool(true, "Label Zone (BOS/CHoCH + score)", group = gVis)
+lblSizeOpt   = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = gVis)
+zoneTransp   = input.int(82, "Zone Fill Transparency", minval = 50, maxval = 98, group = gVis)
+
+longCol  = theme == "Ice Blue" ? color.rgb(0, 190, 255)  : theme == "Gold Black" ? color.rgb(255, 196, 48) : theme == "Aqua Violet" ? color.rgb(0, 230, 200) : color.rgb(0, 200, 120)
+shortCol = theme == "Ice Blue" ? color.rgb(255, 120, 70) : theme == "Gold Black" ? color.rgb(255, 78, 60)  : theme == "Aqua Violet" ? color.rgb(180, 110, 255) : color.rgb(235, 64, 64)
+
+f_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+f_stars(float sc) => sc >= 8.5 ? "★★★★★" : sc >= 7 ? "★★★★" : sc >= 5.5 ? "★★★" : sc >= 4 ? "★★" : sc >= 2.5 ? "★" : "·"
+f_tier(float sc)  => sc >= 8.5 ? "ELITE" : sc >= 7 ? "VERY STRONG" : sc >= 5.5 ? "STRONG" : sc >= 4 ? "MODERATE" : sc >= 2.5 ? "WEAK" : "FORMING"
+
+f_zone_base(bool isBull) => isBull ? longCol : shortCol
+
+atr     = ta.atr(atrLen)
+rsi     = ta.rsi(close, 14)
+volSma  = ta.sma(volume, 20)
+volRatio = volSma > 0 ? volume / volSma : 1.0
+candleRng = high - low
+bodyRatio = candleRng > 0 ? math.abs(close - open) / candleRng : 0.5
+atrRatio  = atr > 0 ? candleRng / atr : 0.0
+mom3 = close - close[3]
+mom5 = close - close[5]
+
+float chwidth = (na(atr) or atr <= 0 ? close * 0.005 : atr) * zoneAtrMult
+
+htfEma = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEmaLen)[1], lookahead = barmerge.lookahead_off)
+
+f_breakout_strength(int nTests, int ageBars, float bdy, float atrR, float volR, float m3, float m5, bool isBull, float price, float cleanDist, float cw, float rsiv, bool confluence, bool htfAlign) =>
+    s = 0.0
+    s += nTests >= 5 ? 2.0 : nTests == 4 ? 1.5 : nTests == 3 ? 1.0 : 0.5
+    s += ageBars >= 120 ? 1.0 : ageBars >= 60 ? 0.7 : ageBars >= 25 ? 0.4 : 0.0
+    s += bdy >= 0.85 ? 1.0 : bdy >= 0.70 ? 0.7 : bdy >= 0.55 ? 0.4 : 0.0
+    s += atrR >= 2.5 ? 1.0 : atrR >= 1.7 ? 0.7 : atrR >= 1.1 ? 0.4 : 0.0
+    s += volR >= 2.5 ? 1.5 : volR >= 2.0 ? 1.1 : volR >= 1.5 ? 0.7 : volR >= 1.3 ? 0.4 : 0.0
+    m3ok = (isBull and m3 > 0) or (not isBull and m3 < 0)
+    m5ok = (isBull and m5 > 0) or (not isBull and m5 < 0)
+    m3mag = price > 0 ? math.abs(m3) / (price * 0.001) : 0.0
+    m5mag = price > 0 ? math.abs(m5) / (price * 0.001) : 0.0
+    if m3ok and m5ok
+        s += math.min(1.5, m3mag * 0.4 + m5mag * 0.3)
+    else if m3ok or m5ok
+        s += math.min(0.8, m3mag * 0.3)
+    else
+        s -= 0.5
+    clean  = cleanDist > 0.30 * cw
+    rsiOk  = (isBull and rsiv > 55) or (not isBull and rsiv < 45)
+    s += clean and rsiOk ? 0.5 : clean ? 0.25 : 0.0
+    s += confluence ? 1.0 : 0.0
+    s += htfAlign ? 0.5 : 0.0
+    math.max(0.0, math.min(10.0, math.round(s * 10) / 10))
+
+ph = ta.pivothigh(prd, prd)
+pl = ta.pivotlow(prd, prd)
+
+var phPrice = array.new_float(0)
+var phBar   = array.new_int(0)
+var plPrice = array.new_float(0)
+var plBar   = array.new_int(0)
+
+if not na(ph)
+    array.unshift(phPrice, ph)
+    array.unshift(phBar, bar_index - prd)
+    if array.size(phPrice) > 1
+        for x = array.size(phBar) - 1 to 1
+            if bar_index - array.get(phBar, x) > maxZoneHist
+                array.pop(phBar)
+                array.pop(phPrice)
+
+if not na(pl)
+    array.unshift(plPrice, pl)
+    array.unshift(plBar, bar_index - prd)
+    if array.size(plPrice) > 1
+        for x = array.size(plBar) - 1 to 1
+            if bar_index - array.get(plBar, x) > maxZoneHist
+                array.pop(plBar)
+                array.pop(plPrice)
+
+var float lastSH    = na
+var int   lastSHbar = na
+var float lastSL    = na
+var int   lastSLbar = na
+var bool  shActive  = false
+var bool  slActive  = false
+var int   lastBreakDir = 0
+
+if not na(ph)
+    lastSH    := ph
+    lastSHbar := bar_index - prd
+    shActive  := true
+if not na(pl)
+    lastSL    := pl
+    lastSLbar := bar_index - prd
+    slActive  := true
+
+srcHi = bosConfirm == "Close" ? close : high
+srcLo = bosConfirm == "Close" ? close : low
+msBull = useStructure and shActive and not na(lastSH) and srcHi > lastSH and close > open
+msBear = useStructure and slActive and not na(lastSL) and srcLo < lastSL and close < open
+
+float bomax     = na
+int   bostart_b = bar_index
+int   num_b     = 0
+hgst = ta.highest(prd)[1]
+
+if useZone and array.size(phPrice) >= minTests and close > open and close > hgst
+    _bm = array.get(phPrice, 0)
+    _xx = 0
+    _cntB = 0
+    for x = 0 to array.size(phPrice) - 1
+        if array.get(phPrice, x) >= close
+            break
+        _xx := x
+        _cntB += 1
+        _bm := math.max(_bm, array.get(phPrice, x))
+    if _cntB >= minTests and open <= _bm
+        _n  = 0
+        _bs = bar_index
+        for x = 0 to _xx
+            pv = array.get(phPrice, x)
+            if pv <= _bm and pv >= _bm - chwidth
+                _n  += 1
+                _bs := array.get(phBar, x)
+        if _n >= minTests and hgst < _bm
+            bomax     := _bm
+            bostart_b := _bs
+            num_b     := _n
+
+float bomin     = na
+int   bostart_r = bar_index
+int   num_r     = 0
+lwst = ta.lowest(prd)[1]
+
+if useZone and array.size(plPrice) >= minTests and close < open and close < lwst
+    _bn = array.get(plPrice, 0)
+    _xx = 0
+    _cntS = 0
+    for x = 0 to array.size(plPrice) - 1
+        if array.get(plPrice, x) <= close
+            break
+        _xx := x
+        _cntS += 1
+        _bn := math.min(_bn, array.get(plPrice, x))
+    if _cntS >= minTests and open >= _bn
+        _n  = 0
+        _bs = bar_index
+        for x = 0 to _xx
+            pv = array.get(plPrice, x)
+            if pv >= _bn and pv <= _bn + chwidth
+                _n  += 1
+                _bs := array.get(plBar, x)
+        if _n >= minTests and lwst > _bn
+            bomin     := _bn
+            bostart_r := _bs
+            num_r     := _n
+
+zoneBull = not na(bomax)
+zoneBear = not na(bomin)
+bullBreak = zoneBull or msBull
+bearBreak = zoneBear or msBear
+
+float levelBull = zoneBull ? bomax : lastSH
+int   testsBull = zoneBull ? num_b : 2
+int   startBull = zoneBull ? bostart_b : (na(lastSHbar) ? bar_index : lastSHbar)
+int   ageBull   = zoneBull ? bar_index - bostart_b : (na(lastSHbar) ? 0 : bar_index - lastSHbar)
+bool  confBull  = zoneBull and msBull
+bool  htfBull   = not useHtf or na(htfEma) or close > htfEma
+
+float levelBear = zoneBear ? bomin : lastSL
+int   testsBear = zoneBear ? num_r : 2
+int   startBear = zoneBear ? bostart_r : (na(lastSLbar) ? bar_index : lastSLbar)
+int   ageBear   = zoneBear ? bar_index - bostart_r : (na(lastSLbar) ? 0 : bar_index - lastSLbar)
+bool  confBear  = zoneBear and msBear
+bool  htfBear   = not useHtf or na(htfEma) or close < htfEma
+
+float bullStr = bullBreak and not na(levelBull) ? f_breakout_strength(testsBull, ageBull, bodyRatio, atrRatio, volRatio, mom3, mom5, true,  close, close - levelBull, chwidth, rsi, confBull, htfBull) : 0.0
+float bearStr = bearBreak and not na(levelBear) ? f_breakout_strength(testsBear, ageBear, bodyRatio, atrRatio, volRatio, mom3, mom5, false, close, levelBear - close, chwidth, rsi, confBear, htfBear) : 0.0
+
+var int lastSigBar = na
+cooldownOk = not useCooldown or na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+
+okBull = bullBreak and not na(levelBull) and bullStr >= minStr and (not onlyStrong or bullStr >= strongThr) and htfBull and cooldownOk and strategy.position_size == 0
+okBear = bearBreak and not na(levelBear) and bearStr >= minStr and (not onlyStrong or bearStr >= strongThr) and htfBear and cooldownOk and strategy.position_size == 0
+
+sigLong  = okBull and (not okBear or bullStr >= bearStr)
+sigShort = okBear and (not okBull or bearStr >  bullStr)
+
+// ─────────────────────── real orders (this is what makes the Strategy
+// Tester report populate — an indicator() script can never do this) ───────
+var float tp1Level   = na
+var float tp2Level   = na
+var float tp3Level   = na
+var float entryLevel = na
+var float stopLevel  = na
+var bool  tp1Filled  = false
+var bool  tp2Filled  = false
+var bool  lastWasChoCh = false
+var int   lastBreakDirS = 0
+
+if sigLong or sigShort
+    bool  isLong  = sigLong
+    int   side    = isLong ? 1 : -1
+    float sc      = isLong ? bullStr : bearStr
+    float lvl     = isLong ? levelBull : levelBear
+    int   zStart  = isLong ? startBull : startBear
+    bool  isChoCh = showCHoCH and (isLong ? lastBreakDirS == -1 : lastBreakDirS == 1)
+
+    float zoneTop = isLong ? lvl : lvl + chwidth
+    float zoneBot = isLong ? lvl - chwidth : lvl
+
+    float entv    = close
+    float rawStop = isLong ? zoneBot - atr * slBufAtr : zoneTop + atr * slBufAtr
+    float risk0   = math.abs(entv - rawStop)
+    float maxR    = atr * maxRiskAtr
+    float minR    = atr * minRiskAtr
+    float risk    = math.min(math.max(risk0, minR), maxR)
+    float stopv   = isLong ? entv - risk : entv + risk
+
+    if risk > 0
+        float qtyRisk = strategy.equity * riskPct / 100 / risk
+        float qtyCap  = strategy.equity * maxLev / entv
+        float qty     = math.min(qtyRisk, qtyCap)
+
+        entryLevel := entv
+        stopLevel  := stopv
+        tp1Level   := isLong ? entv + risk * tp1R : entv - risk * tp1R
+        tp2Level   := isLong ? entv + risk * tp2R : entv - risk * tp2R
+        tp3Level   := isLong ? entv + risk * tp3R : entv - risk * tp3R
+        tp1Filled  := false
+        tp2Filled  := false
+        lastSigBar := bar_index
+        lastWasChoCh := isChoCh
+        lastBreakDirS := side
+
+        if isLong
+            strategy.entry("Long", strategy.long, qty = qty)
+            shActive := false
+        else
+            strategy.entry("Short", strategy.short, qty = qty)
+            slActive := false
+
+        if showZone
+            int zoneFillT = int(math.max(45, zoneTransp - sc * 3))
+            int zoneBordT = int(math.max(20, 70 - sc * 4))
+            box.new(zStart, zoneTop, bar_index + 12, zoneBot, xloc = xloc.bar_index, bgcolor = color.new(f_zone_base(isLong), zoneFillT), border_color = color.new(f_zone_base(isLong), zoneBordT), border_width = 1)
+            if showZoneLbl
+                string zt = (isChoCh ? "CHoCH" : "BOS") + "  " + f_stars(sc) + " " + str.tostring(math.round(sc * 10) / 10) + "/10"
+                label.new(math.round((zStart + bar_index) / 2), (zoneTop + zoneBot) / 2, zt, xloc = xloc.bar_index, style = label.style_label_center, color = color.new(f_zone_base(isLong), 100), textcolor = isLong ? longCol : shortCol, size = f_size(lblSizeOpt), textalign = text.align_center)
+
+        if showSignal
+            string head = (isLong ? "STRONG LONG BREAKOUT" : "STRONG SHORT BREAKOUT") + "  [" + (isChoCh ? "CHoCH" : "BOS") + "]"
+            string txt  = showStars ? head + "\n" + f_stars(sc) + "  " + str.tostring(math.round(sc * 10) / 10) + "/10  " + f_tier(sc) : head
+            label.new(bar_index, isLong ? low : high, txt, style = isLong ? label.style_label_up : label.style_label_down, color = color.new(isLong ? longCol : shortCol, 6), textcolor = color.white, size = f_size(lblSizeOpt))
+
+// ─────────────────────── stop ratchet + partial exits ───────────────────────
+// Same fix as the patched indicator: once TP1 is reached, the protective
+// stop for the REMAINING position moves to breakeven; once TP2 is reached,
+// it moves to TP1 -- and, unlike the indicator, this is a REAL working stop
+// order on the remaining quantity, not just a number in a dashboard.
+if strategy.position_size != 0 and not na(tp1Level)
+    bool isLong2 = strategy.position_size > 0
+    if not tp1Filled and (isLong2 ? high >= tp1Level : low <= tp1Level)
+        tp1Filled := true
+    if not tp2Filled and (isLong2 ? high >= tp2Level : low <= tp2Level)
+        tp2Filled := true
+
+    if tp1Filled
+        stopLevel := isLong2 ? math.max(stopLevel, entryLevel) : math.min(stopLevel, entryLevel)
+    if tp2Filled
+        stopLevel := isLong2 ? math.max(stopLevel, tp1Level) : math.min(stopLevel, tp1Level)
+
+    string sideTag = isLong2 ? "Long" : "Short"
+    strategy.exit("TP1", sideTag, qty_percent = tp1Pct, limit = tp1Level, stop = stopLevel)
+    strategy.exit("TP2", sideTag, qty_percent = tp2Pct, limit = tp2Level, stop = stopLevel)
+    strategy.exit("TP3", sideTag, limit = tp3Level, stop = stopLevel)
+
+alertcondition(sigLong,  "Strong Long Breakout",  "Strong Breakout Signals: STRONG LONG breakout on {{ticker}} {{interval}}.")
+alertcondition(sigShort, "Strong Short Breakout", "Strong Breakout Signals: STRONG SHORT breakout on {{ticker}} {{interval}}.")
