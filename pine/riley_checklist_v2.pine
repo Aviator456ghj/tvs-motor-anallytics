@@ -43,15 +43,23 @@ strategy("Riley Checklist v2: + Fast Fill + BOS Volume",
      process_orders_on_close = true)
 
 // ───────────────────────────── inputs ────────────────────────────────────────
-swingK       = input.int(5,    "Swing fractal half-width", minval = 2)
-fvgMult      = input.float(0.5, "Min Fair Value Gap size (x ATR)", step = 0.1,
+// Part 1 — the original 5-step checklist (Location, FVG, BOS, Failed
+// Retest, Entry). This logic is ALWAYS active — Part 2 below only adds
+// two extra gates on top of it, it never replaces or bypasses Part 1.
+swingK       = input.int(5,    "Swing fractal half-width", minval = 2, group = "Part 1 — 5-step checklist")
+fvgMult      = input.float(0.5, "Min Fair Value Gap size (x ATR)", step = 0.1, group = "Part 1 — 5-step checklist",
      tooltip = "0 disables the FVG filter entirely (not recommended — validated results require it)")
-retestBars   = input.int(12,   "Failed-retest window (bars)", minval = 1)
-fillBars     = input.int(12,   "Entry fill window after retest (bars, hard cap)", minval = 1)
-maxFillDelay = input.int(3,    "Part 2: cancel if not filled within (bars of arming)", minval = 1,
-     tooltip = "The validated 'fast fill' rule — a setup that takes longer than this to trigger is stale. Set >= fillBars to disable.")
-minVolRatio  = input.float(1.3, "Part 2: min BOS-candle volume (x 20-bar avg)", step = 0.1,
-     tooltip = "The validated 'strong volume' rule — skip breaks of structure on weak volume. 0 disables.")
+retestBars   = input.int(12,   "Failed-retest window (bars)", minval = 1, group = "Part 1 — 5-step checklist")
+fillBars     = input.int(12,   "Entry fill window after retest (bars, hard cap)", minval = 1, group = "Part 1 — 5-step checklist")
+
+// Part 2 — the validated failure-analysis filter, toggleable so you can
+// A/B "Part 1 only" vs "Part 1 + Part 2" on the same chart/symbol.
+useP2        = input.bool(true, "Enable Part 2 (fast fill + BOS volume)", group = "Part 2 — failure-analysis filter",
+     tooltip = "Turn off to run pure Part 1 (same as riley_checklist.pine v1). Turn on for the validated PF 1.41->2.30 (BTC) / 1.70->2.72 (ETH) improvement.")
+maxFillDelay = input.int(3,    "Cancel if not filled within (bars of arming)", minval = 1, group = "Part 2 — failure-analysis filter",
+     tooltip = "The validated 'fast fill' rule — a setup that takes longer than this to trigger is stale. Only applies when Part 2 is enabled.")
+minVolRatio  = input.float(1.3, "Min BOS-candle volume (x 20-bar avg)", step = 0.1, group = "Part 2 — failure-analysis filter",
+     tooltip = "The validated 'strong volume' rule — skip breaks of structure on weak volume. Only applies when Part 2 is enabled.")
 exitMode     = input.string("Swing Trail", "Exit mode", options = ["Swing Trail", "Fixed R"])
 rMultiple    = input.float(2.0, "Take-profit (R multiple, Fixed R mode only)", step = 0.1)
 riskPct      = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
@@ -136,7 +144,7 @@ if shortPending and not shortArmed
             bounceHighS := high
             bounceHighLowS := low
         if bar_index - bosBarS >= retestBars
-            if bounceHighS < refHighS and (minVolRatio <= 0 or volRatioBosS >= minVolRatio)
+            if bounceHighS < refHighS and (not useP2 or minVolRatio <= 0 or volRatioBosS >= minVolRatio)
                 shortArmed := true
                 entryLevelS := bounceHighLowS
                 stopLevelS := bounceHighS
@@ -150,7 +158,7 @@ if shortPending and not shortArmed
                 shortPending := false   // failed volume checklist item too -> discard, no trade
 
 if shortArmed and strategy.position_size == 0
-    if high > refHighS or bar_index > fillDeadlineS or bar_index - armedBarS > maxFillDelay
+    if high > refHighS or bar_index > fillDeadlineS or (useP2 and bar_index - armedBarS > maxFillDelay)
         strategy.cancel("Short")
         shortPending := false
         shortArmed := false
@@ -188,7 +196,7 @@ if longPending and not longArmed
             bounceLowL := low
             bounceLowHighL := high
         if bar_index - bosBarL >= retestBars
-            if bounceLowL > refLowL and (minVolRatio <= 0 or volRatioBosL >= minVolRatio)
+            if bounceLowL > refLowL and (not useP2 or minVolRatio <= 0 or volRatioBosL >= minVolRatio)
                 longArmed := true
                 entryLevelL := bounceLowHighL
                 stopLevelL := bounceLowL
@@ -202,7 +210,7 @@ if longPending and not longArmed
                 longPending := false   // failed volume checklist item too -> discard, no trade
 
 if longArmed and strategy.position_size == 0
-    if low < refLowL or bar_index > fillDeadlineL or bar_index - armedBarL > maxFillDelay
+    if low < refLowL or bar_index > fillDeadlineL or (useP2 and bar_index - armedBarL > maxFillDelay)
         strategy.cancel("Long")
         longPending := false
         longArmed := false
@@ -259,10 +267,13 @@ plotshape(longArmed and longArmed[1] != true, "Failed retest (long)", shape.labe
 bgcolor(inUpLeg and bullFVGFlag ? color.new(#1baf7a, 92) : na, title = "Bull FVG active in up-leg")
 bgcolor(inDownLeg and bearFVGFlag ? color.new(#e34948, 92) : na, title = "Bear FVG active in down-leg")
 
-var table info = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 65), border_width = 1)
+var table info = table.new(position.top_right, 2, 3, bgcolor = color.new(color.black, 65), border_width = 1)
 if barstate.islast
-    table.cell(info, 0, 0, "v2: Part 2 filter", text_color = color.white, text_size = size.small)
-    table.cell(info, 1, 0, "fast fill + BOS volume", text_color = color.yellow, text_size = size.small)
-    table.cell(info, 0, 1, "Position", text_color = color.white, text_size = size.tiny)
-    table.cell(info, 1, 1, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+    table.cell(info, 0, 0, "Part 1", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, "always active", text_color = color.new(#1baf7a, 0), text_size = size.small)
+    table.cell(info, 0, 1, "Part 2", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 1, useP2 ? "ON (fast fill + BOS volume)" : "OFF (Part 1 only)",
+         text_color = useP2 ? color.new(#1baf7a, 0) : color.gray, text_size = size.small)
+    table.cell(info, 0, 2, "Position", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 2, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
          text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.tiny)
