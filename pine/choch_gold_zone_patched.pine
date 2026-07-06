@@ -1,0 +1,284 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// LOOPHOLE-PATCHED version of the user's "ChoCh GZ Sized" strategy.
+// Original concept preserved exactly (swing structure -> CHoCH -> pullback
+// into the 0.5-0.618 golden zone -> reversal-candle confirmation -> risk-
+// based sizing) — this only closes four gaps found on review:
+//
+//   FIX 1 (critical): a protective stop-loss is now ALWAYS placed the
+//     moment a position opens. The original made this optional
+//     (use_hard_sl defaulted to false) — with it off, the only exit was
+//     waiting for an opposite CHoCh, which can take arbitrarily long in a
+//     choppy market. That also means backtests without the stop hide
+//     tail risk rather than removing it (a likely source of the "high
+//     win-rate" framing) — losers that should have been cut small instead
+//     sit open and get bailed out by mean reversion, when they get bailed
+//     out at all.
+//   FIX 2: position size is now capped by a max-leverage input. The
+//     original's risk_amount/risk_dist formula has no ceiling — a golden-
+//     zone touch that happens to sit close to its stop produces an
+//     unrealistically large, unbounded position size.
+//   FIX 3: the setup is invalidated the instant a CLOSE breaks back
+//     through `origin` (the swing that started the reversal). Previously
+//     the golden zone kept recalculating from a stale origin/peak even
+//     after the reversal thesis had failed, so a later wick back into that
+//     stale zone could still fire a trade on already-broken structure.
+//   FIX 4: a pending setup now expires after `max_setup_bars` bars without
+//     a confirmed entry, instead of staying armed indefinitely and
+//     eventually firing off ancient, far-away structure.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy(
+     title="BTCUSD ChoCh Golden Zone Retracement Strategy (Patched)",
+     shorttitle="ChoCh GZ Sized (Patched)",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.cash,
+     default_qty_value=100000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.04
+ )
+
+// ==========================================
+// 1. INPUTS & CONFIGURATION
+// ==========================================
+left_len   = input.int(6, "Pivot Left Length (Swing)", minval=1, group="Market Structure")
+right_len  = input.int(6, "Pivot Right Length (Swing)", minval=1, group="Market Structure")
+
+// Golden Zone Settings
+deeper_entry = input.bool(false, "Use Deeper GZ Retracement (0.618 - 0.786)", group="Golden Zone")
+fib_low      = deeper_entry ? 0.618 : input.float(0.50, "GZ Fib Low", minval=0.0, maxval=1.0, step=0.01, group="Golden Zone")
+fib_high     = deeper_entry ? 0.786 : input.float(0.618, "GZ Fib High", minval=0.0, maxval=1.0, step=0.01, group="Golden Zone")
+
+// Risk Management & Sizing
+risk_pct    = input.float(2.0, "Risk Per Trade (%)", minval=0.1, maxval=10.0, step=0.1, group="Risk Management")
+max_lev     = input.float(3.0, "Max Leverage (position-size cap)", minval=1.0, step=0.5, group="Risk Management")
+// FIX 1: the hard stop is no longer optional — it is always placed the
+// moment a position opens. (The old on/off toggle is gone on purpose.)
+
+// Reversal & Trend Filters
+use_engulfing = input.bool(true, "Use Reversal Engulfing Filter (Next candle exceeds Touch candle high/low)", group="Filters")
+use_adx_filter = input.bool(true, "Use ADX Trend Strength Filter (Filter ranging markets)", group="Filters")
+adx_min_val   = input.float(23.0, "ADX Minimum Level", minval=1.0, group="Filters")
+use_trend_ma  = input.bool(false, "Use Trend EMA Filter", group="Filters")
+trend_ma_len  = input.int(100, "Trend EMA Period", minval=10, group="Filters")
+// FIX 4: expire a pending golden-zone setup if price never pulls back in.
+max_setup_bars = input.int(500, "Max Bars to Wait for Pullback (setup expiry)", minval=10, group="Filters")
+
+show_structure = input.bool(true, "Show Swing Levels", group="Visuals")
+show_gz        = input.bool(true, "Show Golden Zone Band", group="Visuals")
+
+// ==========================================
+// 2. TECH FILTERS & INDICATORS
+// ==========================================
+ema_val = ta.ema(close, trend_ma_len)
+plot(use_trend_ma ? ema_val : na, title="Trend EMA Filter", color=color.blue, linewidth=2)
+
+[plusDI, minusDI, adx_val] = ta.dmi(14, 14)
+
+// ==========================================
+// 3. SWING DETECTION (NON-REPAINTING)
+// ==========================================
+var float last_swing_high = na
+var float last_swing_low  = na
+
+ph = ta.pivothigh(high, left_len, right_len)
+pl = ta.pivotlow(low, left_len, right_len)
+
+if not na(ph)
+    last_swing_high := ph
+if not na(pl)
+    last_swing_low := pl
+
+// ==========================================
+// 4. CORE STATE MACHINE
+// ==========================================
+var string trend = na // "bullish" or "bearish"
+var float origin = na
+var float peak = na
+var bool setup_active = false
+var int  setup_start_bar = na  // FIX 4: when this setup was armed
+var bool cond_a_met = false
+var int cond_a_bar = na
+var float cond_a_high = na
+var float cond_a_low = na
+
+in_long  = strategy.position_size > 0
+in_short = strategy.position_size < 0
+
+var float entry_p = na
+var float initial_sl = na
+
+bullish_choch = not na(last_swing_high) and (close > last_swing_high)
+bearish_choch = not na(last_swing_low) and (close < last_swing_low)
+
+plotshape(bullish_choch and (trend != "bullish" or in_short), title="Bullish ChoCh", style=shape.labelup, location=location.belowbar, color=color.green, size=size.small, text="Bullish ChoCh", textcolor=color.white)
+plotshape(bearish_choch and (trend != "bearish" or in_long), title="Bearish ChoCh", style=shape.labeldown, location=location.abovebar, color=color.red, size=size.small, text="Bearish ChoCh", textcolor=color.white)
+
+var float prev_position_size = 0.0
+entered_long = (strategy.position_size > 0 and prev_position_size <= 0)
+entered_short = (strategy.position_size < 0 and prev_position_size >= 0)
+prev_position_size := strategy.position_size
+
+if entered_long
+    entry_p := close
+    initial_sl := not na(last_swing_low) ? last_swing_low : low[1]
+if entered_short
+    entry_p := close
+    initial_sl := not na(last_swing_high) ? last_swing_high : high[1]
+
+// --- EXECUTION / EXIT MANAGEMENT ---
+if in_long
+    // FIX 1: the protective stop is unconditional now — always live.
+    strategy.exit("SL Long", "Long", stop=initial_sl)
+
+    if bearish_choch
+        strategy.close("Long", comment="Bearish ChoCh Exit")
+        trend := "bearish"
+        origin := not na(last_swing_high) ? last_swing_high : high
+        peak := low
+        setup_active := true
+        setup_start_bar := bar_index
+        cond_a_met := false
+
+if in_short
+    strategy.exit("SL Short", "Short", stop=initial_sl)
+
+    if bullish_choch
+        strategy.close("Short", comment="Bullish ChoCh Exit")
+        trend := "bullish"
+        origin := not na(last_swing_low) ? last_swing_low : low
+        peak := high
+        setup_active := true
+        setup_start_bar := bar_index
+        cond_a_met := false
+
+if not in_long and not in_short
+    if bullish_choch and trend != "bullish"
+        trend := "bullish"
+        origin := not na(last_swing_low) ? last_swing_low : low
+        peak := high
+        setup_active := true
+        setup_start_bar := bar_index
+        cond_a_met := false
+    else if bearish_choch and trend != "bearish"
+        trend := "bearish"
+        origin := not na(last_swing_high) ? last_swing_high : high
+        peak := low
+        setup_active := true
+        setup_start_bar := bar_index
+        cond_a_met := false
+
+// --- PULLBACK & CONFIRMATION LOGIC ---
+float gz_high_val = na
+float gz_low_val  = na
+
+if setup_active and not in_long and not in_short
+    // FIX 4: give up on a setup that's waited too long for a pullback.
+    if bar_index - setup_start_bar > max_setup_bars
+        setup_active := false
+        cond_a_met := false
+    else if trend == "bullish"
+        // FIX 3: a CLOSE back through origin falsifies the whole reversal
+        // thesis — deactivate instead of leaving a stale zone armed.
+        if close < origin
+            setup_active := false
+            cond_a_met := false
+        else
+            if high > peak
+                peak := high
+                cond_a_met := false
+
+            gz_high_val := peak - fib_low * (peak - origin)
+            gz_low_val  := peak - fib_high * (peak - origin)
+
+            touches_gz = (low <= gz_high_val) and (high >= gz_low_val)
+            is_red = close < open
+
+            if touches_gz and is_red
+                cond_a_met := true
+                cond_a_bar := bar_index
+                cond_a_high := high
+                cond_a_low := low
+            else if cond_a_met and (bar_index == cond_a_bar + 1)
+                is_green = close > open
+                engulfing_ok = not use_engulfing or (close > cond_a_high)
+                adx_ok = not use_adx_filter or (adx_val >= adx_min_val)
+                trend_ok = not use_trend_ma or (close > ema_val)
+
+                if is_green and engulfing_ok and adx_ok and trend_ok
+                    sl_temp = not na(last_swing_low) ? last_swing_low : low[1]
+                    risk_dist = close - sl_temp
+                    if risk_dist > 0
+                        risk_amount = strategy.equity * (risk_pct / 100.0)
+                        position_qty = risk_amount / risk_dist
+                        // FIX 2: cap size so a tight risk_dist can't imply
+                        // unrealistic leverage.
+                        qty_cap = strategy.equity * max_lev / close
+                        strategy.entry("Long", strategy.long, qty=math.min(position_qty, qty_cap), comment="GZ Long")
+                        setup_active := false
+                        cond_a_met := false
+                else
+                    if touches_gz and is_red
+                        cond_a_met := true
+                        cond_a_bar := bar_index
+                        cond_a_high := high
+                        cond_a_low := low
+                    else
+                        cond_a_met := false
+
+    else if trend == "bearish"
+        if close > origin
+            setup_active := false
+            cond_a_met := false
+        else
+            if low < peak
+                peak := low
+                cond_a_met := false
+
+            gz_low_val  := peak + fib_low * (origin - peak)
+            gz_high_val := peak + fib_high * (origin - peak)
+
+            touches_gz = (high >= gz_low_val) and (low <= gz_high_val)
+            is_green = close > open
+
+            if touches_gz and is_green
+                cond_a_met := true
+                cond_a_bar := bar_index
+                cond_a_high := high
+                cond_a_low := low
+            else if cond_a_met and (bar_index == cond_a_bar + 1)
+                is_red = close < open
+                engulfing_ok = not use_engulfing or (close < cond_a_low)
+                adx_ok = not use_adx_filter or (adx_val >= adx_min_val)
+                trend_ok = not use_trend_ma or (close < ema_val)
+
+                if is_red and engulfing_ok and adx_ok and trend_ok
+                    sl_temp = not na(last_swing_high) ? last_swing_high : high[1]
+                    risk_dist = sl_temp - close
+                    if risk_dist > 0
+                        risk_amount = strategy.equity * (risk_pct / 100.0)
+                        position_qty = risk_amount / risk_dist
+                        qty_cap = strategy.equity * max_lev / close
+                        strategy.entry("Short", strategy.short, qty=math.min(position_qty, qty_cap), comment="GZ Short")
+                        setup_active := false
+                        cond_a_met := false
+                else
+                    if touches_gz and is_green
+                        cond_a_met := true
+                        cond_a_bar := bar_index
+                        cond_a_high := high
+                        cond_a_low := low
+                    else
+                        cond_a_met := false
+
+// ==========================================
+// 5. PLOTS & VISUALS
+// ==========================================
+plot(show_structure ? last_swing_high : na, title="Swing High Level", color=color.new(color.red, 30), linewidth=1, style=plot.style_stepline)
+plot(show_structure ? last_swing_low : na, title="Swing Low Level", color=color.new(color.green, 30), linewidth=1, style=plot.style_stepline)
+
+p1 = plot(show_gz ? gz_high_val : na, title="GZ Upper Boundary", color=color.new(color.orange, 50), style=plot.style_linebr)
+p2 = plot(show_gz ? gz_low_val : na, title="GZ Lower Boundary", color=color.new(color.orange, 50), style=plot.style_linebr)
+fill(p1, p2, color=color.new(color.orange, 85), title="Golden Zone Background Fill")
+
+barcolor(cond_a_met and bar_index == cond_a_bar ? color.orange : na, title="Golden Zone Touch Candle")
