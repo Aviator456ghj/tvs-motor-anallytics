@@ -1,0 +1,236 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────────────────────
+// Riley Coleman "5-Step Checklist" — BOS + Failed Retest + FVG filter
+//
+// Pine Script port of delta_scalper/riley.py, the mechanical translation of
+// the video "How I'd Trade $4 Into $2,000 In Only 5 Days":
+//   1. Location    : trend context from swing structure (higher-high/
+//                     higher-low = uptrend; lower-low/lower-high = downtrend)
+//   2. Unhealthy move : a Fair Value Gap (3-candle imbalance) >= fvgMult*ATR
+//                     inside the impulsive leg that produced the extreme
+//   3. CHoCH       : a CLOSE beyond the prevailing swing low (uptrend) or
+//                     swing high (downtrend) — the initial break of structure
+//   4. Failed retest : price attempts to continue the OLD trend but fails to
+//                     make a new extreme (lower high / higher low)
+//   5. Entry       : a STOP order below/above the failed retest's low/high,
+//                     trading WITH the new direction. Stop beyond that failed
+//                     extreme; exit via a swing-ratcheted trailing stop
+//                     (tightens only, never loosens) or a fixed R target.
+//
+// Backtested (delta_scalper, 15m, 540 days, walk-forward 360/180): positive
+// profit factor and return on BOTH BTCUSD and ETHUSD in BOTH phases —
+// ETHUSD +56.3% full-period. Recommended chart: ETHUSD or BTCUSD, 15m.
+// No profit guarantee — see reports/riley_report.md for full numbers.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Riley Checklist: BOS + Failed Retest + FVG",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+swingK       = input.int(5,    "Swing fractal half-width", minval = 2)
+fvgMult      = input.float(0.5, "Min Fair Value Gap size (x ATR)", step = 0.1,
+     tooltip = "0 disables the FVG filter entirely (not recommended — validated results require it)")
+retestBars   = input.int(12,   "Failed-retest window (bars)", minval = 1)
+fillBars     = input.int(12,   "Entry fill window after retest (bars)", minval = 1)
+exitMode     = input.string("Swing Trail", "Exit mode", options = ["Swing Trail", "Fixed R"])
+rMultiple    = input.float(2.0, "Take-profit (R multiple, Fixed R mode only)", step = 0.1)
+riskPct      = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
+maxLev       = input.float(3.0, "Max leverage", step = 0.5)
+allowLongs   = input.bool(true, "Allow longs")
+allowShorts  = input.bool(true, "Allow shorts")
+
+atr14 = ta.atr(14)
+
+// ───────────────────────── swing structure (non-repainting) ─────────────────
+ph = ta.pivothigh(high, swingK, swingK)
+pl = ta.pivotlow(low, swingK, swingK)
+
+var float lastHigh = na
+var float prevHigh = na
+var float lastLow  = na
+var float prevLow  = na
+
+// Fair Value Gap leg-tracking flags: reset at the start of each new leg,
+// latched true the moment a qualifying gap appears anywhere inside it.
+var bool inUpLeg     = false
+var bool inDownLeg   = false
+var bool bullFVGFlag = false
+var bool bearFVGFlag = false
+
+if not na(pl)
+    prevLow := lastLow
+    lastLow := pl
+    inUpLeg := true
+    inDownLeg := false
+    bullFVGFlag := false
+if not na(ph)
+    prevHigh := lastHigh
+    lastHigh := ph
+    inDownLeg := true
+    inUpLeg := false
+    bearFVGFlag := false
+
+bullGap = low - high[2]
+bearGap = low[2] - high
+if inUpLeg and fvgMult > 0 and bullGap >= fvgMult * atr14[1]
+    bullFVGFlag := true
+if inDownLeg and fvgMult > 0 and bearGap >= fvgMult * atr14[1]
+    bearFVGFlag := true
+fvgOk(isBull) => fvgMult <= 0 or (isBull ? bullFVGFlag : bearFVGFlag)
+
+uptrendCtx   = not na(prevHigh) and not na(prevLow) and lastHigh > prevHigh and lastLow > prevLow
+downtrendCtx = not na(prevHigh) and not na(prevLow) and lastLow < prevLow and lastHigh < prevHigh
+
+// ───────────────────────────── short setup state ─────────────────────────────
+var bool  shortPending  = false
+var bool  shortArmed    = false
+var float refHighS      = na
+var int   bosBarS       = na
+var float bounceHighS   = na
+var float bounceHighLowS = na
+var float entryLevelS   = na
+var float stopLevelS    = na
+var int   fillDeadlineS = na
+
+bosShortNow = allowShorts and uptrendCtx and fvgOk(true) and ta.crossunder(close, lastLow) and
+     not shortPending and strategy.position_size == 0
+
+if bosShortNow
+    shortPending := true
+    shortArmed := false
+    refHighS := lastHigh
+    bosBarS := bar_index
+    bounceHighS := -1e10
+    bounceHighLowS := na
+
+if shortPending and not shortArmed
+    if high > refHighS
+        shortPending := false
+    else
+        if high > bounceHighS
+            bounceHighS := high
+            bounceHighLowS := low
+        if bar_index - bosBarS >= retestBars
+            if bounceHighS < refHighS
+                shortArmed := true
+                entryLevelS := bounceHighLowS
+                stopLevelS := bounceHighS
+                fillDeadlineS := bar_index + fillBars
+                stopDist = math.abs(entryLevelS - stopLevelS)
+                qtyRisk = strategy.equity * riskPct / 100 / stopDist
+                qtyLev = strategy.equity * maxLev / entryLevelS
+                strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyLev), stop = entryLevelS)
+            else
+                shortPending := false
+
+if shortArmed and strategy.position_size == 0
+    if high > refHighS or bar_index > fillDeadlineS
+        strategy.cancel("Short")
+        shortPending := false
+        shortArmed := false
+
+// ───────────────────────────── long setup state ──────────────────────────────
+var bool  longPending   = false
+var bool  longArmed     = false
+var float refLowL       = na
+var int   bosBarL       = na
+var float bounceLowL    = na
+var float bounceLowHighL = na
+var float entryLevelL   = na
+var float stopLevelL    = na
+var int   fillDeadlineL = na
+
+bosLongNow = allowLongs and downtrendCtx and fvgOk(false) and ta.crossover(close, lastHigh) and
+     not longPending and strategy.position_size == 0
+
+if bosLongNow
+    longPending := true
+    longArmed := false
+    refLowL := lastLow
+    bosBarL := bar_index
+    bounceLowL := 1e10
+    bounceLowHighL := na
+
+if longPending and not longArmed
+    if low < refLowL
+        longPending := false
+    else
+        if low < bounceLowL
+            bounceLowL := low
+            bounceLowHighL := high
+        if bar_index - bosBarL >= retestBars
+            if bounceLowL > refLowL
+                longArmed := true
+                entryLevelL := bounceLowHighL
+                stopLevelL := bounceLowL
+                fillDeadlineL := bar_index + fillBars
+                stopDistL = math.abs(entryLevelL - stopLevelL)
+                qtyRiskL = strategy.equity * riskPct / 100 / stopDistL
+                qtyLevL = strategy.equity * maxLev / entryLevelL
+                strategy.entry("Long", strategy.long, qty = math.min(qtyRiskL, qtyLevL), stop = entryLevelL)
+            else
+                longPending := false
+
+if longArmed and strategy.position_size == 0
+    if low < refLowL or bar_index > fillDeadlineL
+        strategy.cancel("Long")
+        longPending := false
+        longArmed := false
+
+// ───────────────────────────── exit management ───────────────────────────────
+var float shortTrailStop = na
+var float longTrailStop  = na
+
+justEnteredShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+justEnteredLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+
+if justEnteredShort
+    shortTrailStop := stopLevelS
+    shortPending := false
+    shortArmed := false
+if justEnteredLong
+    longTrailStop := stopLevelL
+    longPending := false
+    longArmed := false
+
+if strategy.position_size < 0
+    if exitMode == "Swing Trail" and not na(ph) and ph < shortTrailStop
+        shortTrailStop := ph
+    float tpShort = na
+    if exitMode == "Fixed R"
+        tpShort := strategy.position_avg_price - rMultiple * math.abs(strategy.position_avg_price - shortTrailStop)
+    strategy.exit("Short Exit", "Short", stop = shortTrailStop, limit = tpShort)
+
+if strategy.position_size > 0
+    if exitMode == "Swing Trail" and not na(pl) and pl > longTrailStop
+        longTrailStop := pl
+    float tpLong = na
+    if exitMode == "Fixed R"
+        tpLong := strategy.position_avg_price + rMultiple * math.abs(strategy.position_avg_price - longTrailStop)
+    strategy.exit("Long Exit", "Long", stop = longTrailStop, limit = tpLong)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(lastHigh, "Last swing high", color = color.new(#e34948, 40), style = plot.style_line)
+plot(lastLow,  "Last swing low",  color = color.new(#1baf7a, 40), style = plot.style_line)
+plot(shortArmed or strategy.position_size < 0 ? shortTrailStop : na, "Short stop",
+     color = color.new(#e34948, 0), style = plot.style_linebr, linewidth = 2)
+plot(longArmed or strategy.position_size > 0 ? longTrailStop : na, "Long stop",
+     color = color.new(#1baf7a, 0), style = plot.style_linebr, linewidth = 2)
+
+plotshape(bosShortNow, "Bearish BOS", shape.triangledown, location.abovebar,
+     color.new(#e34948, 0), size = size.tiny)
+plotshape(bosLongNow, "Bullish BOS", shape.triangleup, location.belowbar,
+     color.new(#1baf7a, 0), size = size.tiny)
+plotshape(shortArmed and shortArmed[1] != true, "Failed retest (short)", shape.labeldown,
+     location.abovebar, color.new(#eda100, 0), size = size.tiny, text = "FR", textcolor = color.white)
+plotshape(longArmed and longArmed[1] != true, "Failed retest (long)", shape.labelup,
+     location.belowbar, color.new(#eda100, 0), size = size.tiny, text = "FR", textcolor = color.white)
+
+bgcolor(inUpLeg and bullFVGFlag ? color.new(#1baf7a, 92) : na, title = "Bull FVG active in up-leg")
+bgcolor(inDownLeg and bearFVGFlag ? color.new(#e34948, 92) : na, title = "Bear FVG active in down-leg")
