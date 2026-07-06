@@ -1,0 +1,159 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal Swing Top-Up (Macro-CHoCH-Filtered) — Experimental
+//
+// The idea (from research on 540 days of 1h BTCUSD/ETHUSD):
+//
+//   A macro bias (a real trend-change, detected the same way as the CHoCh
+//   strategies in this repo: a "lower high broken up" or "higher low broken
+//   down" at swing width k=5) contains, on average, ~10-14 smaller INTERNAL
+//   swings (finer width k=2) before it eventually reverses again. Those
+//   internal swings alternate highs/lows almost evenly regardless of the
+//   macro direction — so taking every one of them is mostly noise.
+//
+//   Filter tested: while a bullish macro bias is active, only take the
+//   INTERNAL SWING LOWS (skip the internal highs — they're just pullbacks
+//   against the stronger move). Mirror for a bearish bias: only take
+//   internal swing highs. Ride each entry until the NEXT internal swing of
+//   the opposite kind confirms, or until the macro bias itself ends —
+//   whichever comes first.
+//
+// ⚠️ HONESTY NOTE (read before using): walk-forward backtest (360d in /
+// 180d out, 1h) showed this "with-trend internal filter" improves EVERY
+// quadrant vs. taking every internal swing unfiltered, and is outright
+// profitable in 3 of 4 (BTCUSD out +2%, ETHUSD in +21%, ETHUSD out +10%).
+// BTCUSD in-sample is still net negative (-20%, PF 0.83) — better than the
+// unfiltered baseline (-27%) but not yet clean. This is NOT a standalone
+// proven edge like the CHoCh or Riley strategies in this repo. Treat it as
+// an experimental ADD-ON: small size, paper trade first, and ideally only
+// run it alongside (not instead of) an already-validated macro strategy.
+// Adding a reversal-candle confirmation filter was tested and REJECTED —
+// it helped BTCUSD but badly hurt ETHUSD (PF 1.12→0.31), i.e. it doesn't
+// generalize, so this script deliberately does NOT include one.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Internal Swing Top-Up (Experimental)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+macroK      = input.int(5, "Macro CHoCH swing width (k) — keep at 5, validated", minval = 3)
+internalK   = input.int(2, "Internal swing width (k) — keep at 2, validated", minval = 1)
+bufMult     = input.float(0.5, "Stop buffer beyond the internal swing (x ATR)", step = 0.1)
+riskPct     = input.float(0.35, "Risk per trade (% equity) — top-up size, smaller than a core strategy", step = 0.05)
+maxLev      = input.float(2.0, "Max leverage", step = 0.5)
+
+atr14 = ta.atr(14)
+
+// ───────────────────────── macro bias state machine ──────────────────────────
+// Reproduces delta_scalper/choch.py's find_choch_setups() dir logic:
+//   bullish flip "readies" when a NEW swing high confirms after a lower-high
+//   was broken upward; bearish mirrors with lows. The OLD bias ends the
+//   instant the OPPOSITE break happens (even before that opposite bias is
+//   itself "ready") — that gap is intentionally a flat/neutral zone.
+var float h1 = na, h2 = na
+var int   h1_bar = na, h2_bar = na
+var float l1 = na, l2 = na
+var int   l1_bar = na, l2_bar = na
+var int   pendingUpBreakBar = na
+var int   pendingDnBreakBar = na
+var int   macroBias = 0
+
+ph = ta.pivothigh(high, macroK, macroK)
+pl = ta.pivotlow(low, macroK, macroK)
+
+if not na(ph)
+    atBarH = bar_index - macroK
+    if not na(pendingUpBreakBar) and atBarH > pendingUpBreakBar
+        macroBias := 1
+        pendingUpBreakBar := na
+    h2 := h1
+    h2_bar := h1_bar
+    h1 := ph
+    h1_bar := atBarH
+
+if not na(pl)
+    atBarL = bar_index - macroK
+    if not na(pendingDnBreakBar) and atBarL > pendingDnBreakBar
+        macroBias := -1
+        pendingDnBreakBar := na
+    l2 := l1
+    l2_bar := l1_bar
+    l1 := pl
+    l1_bar := atBarL
+
+// new structure break detected on THIS bar's close -> old bias ends immediately
+if not na(h1) and not na(h2) and na(pendingUpBreakBar) and h1 < h2 and close > h1 and bar_index > h1_bar
+    pendingUpBreakBar := bar_index
+    if macroBias == -1
+        macroBias := 0
+
+if not na(l1) and not na(l2) and na(pendingDnBreakBar) and l1 > l2 and close < l1 and bar_index > l1_bar
+    pendingDnBreakBar := bar_index
+    if macroBias == 1
+        macroBias := 0
+
+// ───────────────────────── internal swings (finer k) ─────────────────────────
+phInt = ta.pivothigh(high, internalK, internalK)
+plInt = ta.pivotlow(low, internalK, internalK)
+
+// ───────────────────────────── exits (checked first) ─────────────────────────
+// 1) macro bias ended or flipped away from the position -> close (top-up is
+//    only valid while its macro bias is active)
+if strategy.position_size > 0 and macroBias != 1
+    strategy.close("Long", comment = "macro bias ended")
+if strategy.position_size < 0 and macroBias != -1
+    strategy.close("Short", comment = "macro bias ended")
+
+// 2) opposite-kind internal swing confirmed -> ride complete
+if strategy.position_size > 0 and not na(phInt)
+    strategy.close("Long", comment = "internal swing high (ride done)")
+if strategy.position_size < 0 and not na(plInt)
+    strategy.close("Short", comment = "internal swing low (ride done)")
+
+// ───────────────────────────── entries (with-trend only) ─────────────────────
+goLong  = macroBias == 1  and not na(plInt) and strategy.position_size <= 0
+goShort = macroBias == -1 and not na(phInt) and strategy.position_size >= 0
+
+if goLong
+    stopLvl  = plInt - bufMult * atr14
+    stopDist = close - stopLvl
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Long Stop", "Long", stop = stopLvl)
+
+if goShort
+    stopLvl  = phInt + bufMult * atr14
+    stopDist = stopLvl - close
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Short Stop", "Short", stop = stopLvl)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+biasColor = macroBias == 1 ? color.new(#1baf7a, 0) : macroBias == -1 ? color.new(#e34948, 0) : color.new(#898781, 0)
+bgcolor(color.new(macroBias == 1 ? #1baf7a : macroBias == -1 ? #e34948 : #898781, 92), title = "Macro bias")
+
+plot(h1, "Last macro swing high", color = color.new(#e34948, 40), style = plot.style_stepline)
+plot(l1, "Last macro swing low",  color = color.new(#1baf7a, 40), style = plot.style_stepline)
+
+plotshape(goLong, "Internal top-up long", shape.triangleup, location.belowbar,
+     color.new(#1baf7a, 0), size = size.tiny)
+plotshape(goShort, "Internal top-up short", shape.triangledown, location.abovebar,
+     color.new(#e34948, 0), size = size.tiny)
+
+var table info = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Macro bias", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, macroBias == 1 ? "BULLISH" : macroBias == -1 ? "BEARISH" : "NEUTRAL",
+         text_color = biasColor, text_size = size.small)
+    table.cell(info, 0, 1, "Mode", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 1, "top-up (experimental)", text_color = color.yellow, text_size = size.tiny)
