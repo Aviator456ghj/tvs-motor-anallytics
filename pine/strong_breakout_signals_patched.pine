@@ -1,0 +1,762 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Strong Breakout Signals — PATCHED
+//
+// Concept (unchanged from the original): two independent breakout engines
+// feed a single 0-10 strength score and a simulated trade with TP1/TP2/TP3 +
+// a hard stop.
+//   Engine A "clustered zone"   : finds a horizontal S/R wall made of 2+
+//                                 pivot highs/lows clustered within an ATR
+//                                 band ("tested" levels), signals when price
+//                                 breaks cleanly through the whole wall.
+//   Engine B "market structure" : plain BOS/CHoCH — break of the single most
+//                                 recent confirmed swing high/low.
+// The strength score rewards more tests, older/more-established zones, a
+// strong-bodied breakout candle, above-average ATR range, a volume spike,
+// aligned short/medium momentum, a "clean" break away from the zone with RSI
+// confluence, both engines agreeing, and HTF trend alignment.
+//
+// Two loopholes found and fixed here (logic/scoring only — no visual,
+// input, or signal-condition redesign):
+//
+// 1) Clustered-zone engine silently required ONE MORE pivot than the "Min
+//    Pivot Tests" input said. The gate used `_xx`, the loop's last
+//    processed ARRAY INDEX (0-based), as a stand-in for a pivot COUNT.
+//    With minTests=2, a real 2-pivot cluster only ever pushed `_xx` to 1,
+//    so `_xx >= minTests` (`1 >= 2`) was false and the zone was dropped
+//    before it even reached the real clustering check below. Fixed by
+//    counting pivots explicitly (`_cntB`/`_cntS`) instead of reusing the
+//    loop index — Engine A now actually honors the configured minimum
+//    instead of silently requiring minTests+1.
+//
+// 2) The simulated stop (`tStop`) was set once at entry and NEVER moved,
+//    but the win/loss classification already assumed it had: a trade that
+//    touched TP1 (or TP2) and then fully round-tripped back to the
+//    ORIGINAL far stop was still scored as a TP1/TP2 win by the dashboard
+//    (Win Rate / PF / Avg R). The drawn SL line, box and label, however,
+//    stayed at the original level the whole time — a trader managing the
+//    position exactly as the chart shows it would have taken the full -1R
+//    loss the dashboard quietly wasn't crediting. Fixed by actually
+//    ratcheting tStop (and its line/box/label) to breakeven once TP1 is
+//    locked in, and to TP1 once TP2 is locked in — so the chart and the
+//    scoring now agree, and the win-rate/PF numbers reflect a stop a
+//    trader could really have had resting on the exchange.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Strong Breakout Signals (Patched)", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+gEng = "01 · Breakout Engine"
+prd          = input.int(5,   "Pivot Period",            minval = 2,  maxval = 50,  group = gEng, tooltip = "Bars on each side for pivot detection. Larger = fewer, more significant swings.")
+maxZoneHist  = input.int(200, "Max Zone History (bars)", minval = 30, maxval = 500, group = gEng, tooltip = "How far back stored pivots are kept for the clustered-zone engine.")
+minTests     = input.int(2,   "Min Pivot Tests",         minval = 2,  maxval = 8,   group = gEng, tooltip = "A clustered zone must have at least this many pivots inside the band to count as a real tested level.")
+bosConfirm   = input.string("Close", "Break Confirmation", options = ["Close", "Wick"], group = gEng, tooltip = "Confirm structure breaks on candle close (stricter) or wick (earlier).")
+useZone      = input.bool(true, "Use Clustered-Zone Breaks", group = gEng, tooltip = "Engine A: break of a multi-pivot tested S/R wall.")
+useStructure = input.bool(true, "Use Market-Structure Breaks", group = gEng, tooltip = "Engine B: break of the most recent swing high/low (BOS / CHoCH).")
+showCHoCH    = input.bool(true, "Tag CHoCH (character change)", group = gEng, tooltip = "Label a break that flips the prior break direction as CHoCH instead of BOS.")
+
+gZone = "02 · Zone Geometry"
+zoneAtrMult  = input.float(0.5, "Zone Band Width (× ATR)", minval = 0.1, maxval = 5.0, step = 0.1, group = gZone, tooltip = "Thickness of the tested-zone band and the strength-shaded zone box, in ATR. Universal across symbols.")
+
+gStr = "03 · Strength Filter"
+minStr       = input.int(4, "Min Strength To Signal (0-10)", minval = 0, maxval = 10, group = gStr, tooltip = "Reject breakouts scoring below this on the 0-10 engine.")
+onlyStrong   = input.bool(false, "Only Show Strong Signals", group = gStr, tooltip = "Extra filter on top of Min Strength.")
+strongThr    = input.float(7.0, "Strong Threshold (score)", minval = 0, maxval = 10, step = 0.5, group = gStr)
+
+gTrade = "04 · Trade Levels"
+atrLen       = input.int(14, "ATR Length", minval = 1, group = gTrade)
+slBufAtr     = input.float(0.30, "Stop Buffer Beyond Zone (ATR)", minval = 0.0, maxval = 3.0, step = 0.05, group = gTrade, tooltip = "Stop sits beyond the broken zone by this ATR cushion.")
+maxRiskAtr   = input.float(4.0, "Max Risk (ATR) — stop cap",  minval = 0.5, maxval = 12.0, step = 0.1, group = gTrade, tooltip = "Hard cap on stop distance so a structural stop never becomes a 'wide stop'.")
+minRiskAtr   = input.float(0.5, "Min Risk (ATR) — stop floor", minval = 0.1, maxval = 6.0,  step = 0.1, group = gTrade, tooltip = "Floor on stop distance so the 1R target never becomes a 'tight TP'.")
+tp1R         = input.float(1.0, "TP1 (R)", minval = 0.5, maxval = 50, step = 0.1, group = gTrade)
+tp2R         = input.float(2.0, "TP2 (R)", minval = 0.5, maxval = 50, step = 0.1, group = gTrade)
+tp3R         = input.float(3.0, "TP3 (R)", minval = 0.5, maxval = 50, step = 0.1, group = gTrade)
+levelLen     = input.int(12, "Level Shelf (bars)", minval = 2, maxval = 500, group = gTrade, tooltip = "Forward shelf length for the live SL/TP labels. On close the ticket snaps back to the exit bar.")
+maxZonePct   = input.float(20.0, "Max Zone Width (% of trade span)", minval = 2, maxval = 100, step = 1, group = gTrade, tooltip = "Caps how far the SL/TP/Entry zones extend to the right, as a % of bars elapsed since entry — kills the super-wide 'tower' zones on long trades. The left edge stays anchored at entry. 100% = extend fully to the current bar (original behaviour).")
+showLines    = input.bool(true, "Show SL / TP Lines", group = gTrade)
+showBoxes    = input.bool(true, "Show SL / TP Zones", group = gTrade)
+showLevelLbl = input.bool(true, "Label Level Prices", group = gTrade)
+showExitLbl  = input.bool(true, "Show Trade Result Labels", group = gTrade)
+maxHist      = input.int(30, "Max Historical Trades", minval = 1, maxval = 80, group = gTrade)
+
+gFilt = "05 · Filters"
+useHtf       = input.bool(true,  "HTF Trend Alignment (block counter-trend)", group = gFilt, tooltip = "Only LONG breakouts above the HTF EMA, only SHORT below it.")
+htfTF        = input.timeframe("240", "HTF Timeframe", group = gFilt)
+htfEmaLen    = input.int(50, "HTF EMA Length", minval = 5, maxval = 500, group = gFilt)
+useCooldown  = input.bool(true, "Use Signal Cooldown", group = gFilt)
+cooldownBars = input.int(10, "Cooldown Bars", minval = 1, maxval = 500, group = gFilt, tooltip = "Minimum bars between consecutive entries.")
+
+gVis = "06 · Visuals"
+theme        = input.string("Emerald", "Color Theme", options = ["Emerald", "Ice Blue", "Gold Black", "Aqua Violet"], group = gVis)
+showSignal   = input.bool(true, "Show Signal Labels", group = gVis)
+showStars    = input.bool(true, "Show ★ Ranking On Labels", group = gVis)
+showZone     = input.bool(true, "Show Strength-Shaded Zone", group = gVis)
+showZoneLbl  = input.bool(true, "Label Zone (BOS/CHoCH + score)", group = gVis)
+lblSizeOpt   = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = gVis)
+zoneTransp   = input.int(82, "Zone Fill Transparency", minval = 50, maxval = 98, group = gVis)
+
+gDash = "07 · Dashboard"
+showDash     = input.bool(true, "Show Dashboard", group = gDash)
+dashPosOpt   = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gDash)
+dashSizeOpt  = input.string("Normal", "Text Size", options = ["Tiny", "Small", "Normal"], group = gDash)
+showHeatRow  = input.bool(true, "Show Per-Target Breakdown", group = gDash)
+
+longCol  = theme == "Ice Blue" ? color.rgb(0, 190, 255)  : theme == "Gold Black" ? color.rgb(255, 196, 48) : theme == "Aqua Violet" ? color.rgb(0, 230, 200) : color.rgb(0, 200, 120)
+shortCol = theme == "Ice Blue" ? color.rgb(255, 120, 70) : theme == "Gold Black" ? color.rgb(255, 78, 60)  : theme == "Aqua Violet" ? color.rgb(180, 110, 255) : color.rgb(235, 64, 64)
+tpFill   = theme == "Ice Blue" ? color.rgb(0, 90, 130)   : theme == "Gold Black" ? color.rgb(96, 74, 0)    : theme == "Aqua Violet" ? color.rgb(0, 95, 90)     : color.rgb(0, 96, 60)
+slFill   = theme == "Ice Blue" ? color.rgb(150, 30, 70)  : theme == "Gold Black" ? color.rgb(150, 40, 18)  : theme == "Aqua Violet" ? color.rgb(110, 30, 120)  : color.rgb(150, 22, 30)
+
+color panelBg     = #0a0c12
+color panelBgAlt  = #0f131c
+color panelHdr    = #161b27
+color panelBorder = #2c3342
+color txtHi       = #ebeef5
+color txtLo       = #8791a2
+color neutralCol  = #69748a
+color goodCol     = #21c87a
+color badCol      = #e6435a
+
+f_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+f_pos(string p) =>
+    switch p
+        "Top Left"     => position.top_left
+        "Top Right"    => position.top_right
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Right" => position.middle_right
+        => position.top_right
+
+f_stars(float sc) => sc >= 8.5 ? "★★★★★" : sc >= 7 ? "★★★★" : sc >= 5.5 ? "★★★" : sc >= 4 ? "★★" : sc >= 2.5 ? "★" : "·"
+f_tier(float sc)  => sc >= 8.5 ? "ELITE" : sc >= 7 ? "VERY STRONG" : sc >= 5.5 ? "STRONG" : sc >= 4 ? "MODERATE" : sc >= 2.5 ? "WEAK" : "FORMING"
+f_signedR(float v) => (v >= 0 ? "+" : "") + str.tostring(v, "#.##") + "R"
+
+f_zone_base(bool isBull) => isBull ? longCol : shortCol
+
+atr     = ta.atr(atrLen)
+rsi     = ta.rsi(close, 14)
+volSma  = ta.sma(volume, 20)
+volRatio = volSma > 0 ? volume / volSma : 1.0
+candleRng = high - low
+bodyRatio = candleRng > 0 ? math.abs(close - open) / candleRng : 0.5
+atrRatio  = atr > 0 ? candleRng / atr : 0.0
+mom3 = close - close[3]
+mom5 = close - close[5]
+
+float chwidth = (na(atr) or atr <= 0 ? close * 0.005 : atr) * zoneAtrMult
+
+htfEma = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEmaLen)[1], lookahead = barmerge.lookahead_off)
+
+f_breakout_strength(int nTests, int ageBars, float bdy, float atrR, float volR, float m3, float m5, bool isBull, float price, float cleanDist, float cw, float rsiv, bool confluence, bool htfAlign) =>
+    s = 0.0
+    s += nTests >= 5 ? 2.0 : nTests == 4 ? 1.5 : nTests == 3 ? 1.0 : 0.5
+    s += ageBars >= 120 ? 1.0 : ageBars >= 60 ? 0.7 : ageBars >= 25 ? 0.4 : 0.0
+    s += bdy >= 0.85 ? 1.0 : bdy >= 0.70 ? 0.7 : bdy >= 0.55 ? 0.4 : 0.0
+    s += atrR >= 2.5 ? 1.0 : atrR >= 1.7 ? 0.7 : atrR >= 1.1 ? 0.4 : 0.0
+    s += volR >= 2.5 ? 1.5 : volR >= 2.0 ? 1.1 : volR >= 1.5 ? 0.7 : volR >= 1.3 ? 0.4 : 0.0
+    m3ok = (isBull and m3 > 0) or (not isBull and m3 < 0)
+    m5ok = (isBull and m5 > 0) or (not isBull and m5 < 0)
+    m3mag = price > 0 ? math.abs(m3) / (price * 0.001) : 0.0
+    m5mag = price > 0 ? math.abs(m5) / (price * 0.001) : 0.0
+    if m3ok and m5ok
+        s += math.min(1.5, m3mag * 0.4 + m5mag * 0.3)
+    else if m3ok or m5ok
+        s += math.min(0.8, m3mag * 0.3)
+    else
+        s -= 0.5
+    clean  = cleanDist > 0.30 * cw
+    rsiOk  = (isBull and rsiv > 55) or (not isBull and rsiv < 45)
+    s += clean and rsiOk ? 0.5 : clean ? 0.25 : 0.0
+    s += confluence ? 1.0 : 0.0
+    s += htfAlign ? 0.5 : 0.0
+    math.max(0.0, math.min(10.0, math.round(s * 10) / 10))
+
+ph = ta.pivothigh(prd, prd)
+pl = ta.pivotlow(prd, prd)
+
+var phPrice = array.new_float(0)
+var phBar   = array.new_int(0)
+var plPrice = array.new_float(0)
+var plBar   = array.new_int(0)
+
+if not na(ph)
+    array.unshift(phPrice, ph)
+    array.unshift(phBar, bar_index - prd)
+    if array.size(phPrice) > 1
+        for x = array.size(phBar) - 1 to 1
+            if bar_index - array.get(phBar, x) > maxZoneHist
+                array.pop(phBar)
+                array.pop(phPrice)
+
+if not na(pl)
+    array.unshift(plPrice, pl)
+    array.unshift(plBar, bar_index - prd)
+    if array.size(plPrice) > 1
+        for x = array.size(plBar) - 1 to 1
+            if bar_index - array.get(plBar, x) > maxZoneHist
+                array.pop(plBar)
+                array.pop(plPrice)
+
+var float lastSH    = na
+var int   lastSHbar = na
+var float lastSL    = na
+var int   lastSLbar = na
+var bool  shActive  = false
+var bool  slActive  = false
+var int   lastBreakDir = 0
+
+if not na(ph)
+    lastSH    := ph
+    lastSHbar := bar_index - prd
+    shActive  := true
+if not na(pl)
+    lastSL    := pl
+    lastSLbar := bar_index - prd
+    slActive  := true
+
+srcHi = bosConfirm == "Close" ? close : high
+srcLo = bosConfirm == "Close" ? close : low
+msBull = useStructure and shActive and not na(lastSH) and srcHi > lastSH and close > open
+msBear = useStructure and slActive and not na(lastSL) and srcLo < lastSL and close < open
+
+float bomax     = na
+int   bostart_b = bar_index
+int   num_b     = 0
+hgst = ta.highest(prd)[1]
+
+if useZone and array.size(phPrice) >= minTests and close > open and close > hgst
+    _bm = array.get(phPrice, 0)
+    _xx = 0
+    _cntB = 0
+    for x = 0 to array.size(phPrice) - 1
+        if array.get(phPrice, x) >= close
+            break
+        _xx := x
+        _cntB += 1
+        _bm := math.max(_bm, array.get(phPrice, x))
+    // was "_xx >= minTests": _xx is the last processed INDEX (0-based), so
+    // that check silently required minTests+1 pivots below close instead of
+    // minTests, causing valid minTests-pivot zones to never even reach the
+    // clustering check below. Gate on the actual count instead.
+    if _cntB >= minTests and open <= _bm
+        _n  = 0
+        _bs = bar_index
+        for x = 0 to _xx
+            pv = array.get(phPrice, x)
+            if pv <= _bm and pv >= _bm - chwidth
+                _n  += 1
+                _bs := array.get(phBar, x)
+        if _n >= minTests and hgst < _bm
+            bomax     := _bm
+            bostart_b := _bs
+            num_b     := _n
+
+float bomin     = na
+int   bostart_r = bar_index
+int   num_r     = 0
+lwst = ta.lowest(prd)[1]
+
+if useZone and array.size(plPrice) >= minTests and close < open and close < lwst
+    _bn = array.get(plPrice, 0)
+    _xx = 0
+    _cntS = 0
+    for x = 0 to array.size(plPrice) - 1
+        if array.get(plPrice, x) <= close
+            break
+        _xx := x
+        _cntS += 1
+        _bn := math.min(_bn, array.get(plPrice, x))
+    // same off-by-one as the bullish block above, mirrored.
+    if _cntS >= minTests and open >= _bn
+        _n  = 0
+        _bs = bar_index
+        for x = 0 to _xx
+            pv = array.get(plPrice, x)
+            if pv >= _bn and pv <= _bn + chwidth
+                _n  += 1
+                _bs := array.get(plBar, x)
+        if _n >= minTests and lwst > _bn
+            bomin     := _bn
+            bostart_r := _bs
+            num_r     := _n
+
+zoneBull = not na(bomax)
+zoneBear = not na(bomin)
+bullBreak = zoneBull or msBull
+bearBreak = zoneBear or msBear
+
+float levelBull = zoneBull ? bomax : lastSH
+int   testsBull = zoneBull ? num_b : 2
+int   startBull = zoneBull ? bostart_b : (na(lastSHbar) ? bar_index : lastSHbar)
+int   ageBull   = zoneBull ? bar_index - bostart_b : (na(lastSHbar) ? 0 : bar_index - lastSHbar)
+bool  confBull  = zoneBull and msBull
+bool  htfBull   = not useHtf or na(htfEma) or close > htfEma
+
+float levelBear = zoneBear ? bomin : lastSL
+int   testsBear = zoneBear ? num_r : 2
+int   startBear = zoneBear ? bostart_r : (na(lastSLbar) ? bar_index : lastSLbar)
+int   ageBear   = zoneBear ? bar_index - bostart_r : (na(lastSLbar) ? 0 : bar_index - lastSLbar)
+bool  confBear  = zoneBear and msBear
+bool  htfBear   = not useHtf or na(htfEma) or close < htfEma
+
+float bullStr = bullBreak and not na(levelBull) ? f_breakout_strength(testsBull, ageBull, bodyRatio, atrRatio, volRatio, mom3, mom5, true,  close, close - levelBull, chwidth, rsi, confBull, htfBull) : 0.0
+float bearStr = bearBreak and not na(levelBear) ? f_breakout_strength(testsBear, ageBear, bodyRatio, atrRatio, volRatio, mom3, mom5, false, close, levelBear - close, chwidth, rsi, confBear, htfBear) : 0.0
+
+var bool  tradeActive = false
+var int   tradeSide   = 0
+var int   tradeBar    = na
+var float tEntry      = na
+var float tStop       = na
+var float tTp1        = na
+var float tTp2        = na
+var float tTp3        = na
+var int   bestStage   = 0
+var float tradeScore  = na
+var int   lastSigBar  = na
+var int   lastSigSide = 0
+var bool  lastWasChoCh = false
+
+cooldownOk = not useCooldown or na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+
+okBull = bullBreak and not na(levelBull) and bullStr >= minStr and (not onlyStrong or bullStr >= strongThr) and htfBull and cooldownOk and not tradeActive
+okBear = bearBreak and not na(levelBear) and bearStr >= minStr and (not onlyStrong or bearStr >= strongThr) and htfBear and cooldownOk and not tradeActive
+
+sigLong  = okBull and (not okBear or bullStr >= bearStr)
+sigShort = okBear and (not okBull or bearStr >  bullStr)
+
+var line  aEntry = na
+var line  aSl    = na
+var line  aT1    = na
+var line  aT2    = na
+var line  aT3    = na
+var box   aTpBox = na
+var box   aSlBox = na
+var box   aZone  = na
+var label aSig   = na
+var label aLEntry= na
+var label aLSl   = na
+var label aLT1   = na
+var label aLT2   = na
+var label aLT3   = na
+var label aZlbl  = na
+var label aExit  = na
+
+type tradeViz
+    line  e  = na
+    line  s  = na
+    line  t1 = na
+    line  t2 = na
+    line  t3 = na
+    box   tb = na
+    box   sb = na
+    box   zb = na
+    label sg = na
+    label le = na
+    label ls = na
+    label l1 = na
+    label l2 = na
+    label l3 = na
+    label zl = na
+    label ex = na
+
+var array<tradeViz> history = array.new<tradeViz>()
+
+var int   sClosed   = 0
+var int   sTp1      = 0
+var int   sTp2      = 0
+var int   sTp3      = 0
+var int   sSl       = 0
+var int   sWins     = 0
+var float sR        = 0.0
+var float sGrossWin = 0.0
+var float sGrossLos = 0.0
+var int   sMaxWin   = 0
+var int   sMaxLos   = 0
+var int   sCurWin   = 0
+var int   sCurLos   = 0
+var int   sStreak   = 0
+var int   sLong     = 0
+var int   sLongWin  = 0
+var int   sShort    = 0
+var int   sShortWin = 0
+var int   sTotalSig = 0
+
+int   _liveSpan = tradeActive and not na(tradeBar) ? bar_index - tradeBar : 0
+int   _liveCap  = int(math.round(_liveSpan * maxZonePct / 100))
+aRight = tradeActive and not na(tradeBar) ? tradeBar + math.max(levelLen, _liveCap) : na
+if tradeActive
+    if showLines
+        if not na(aEntry)
+            line.set_x2(aEntry, aRight)
+        if not na(aSl)
+            line.set_x2(aSl, aRight)
+        if not na(aT1)
+            line.set_x2(aT1, aRight)
+        if not na(aT2)
+            line.set_x2(aT2, aRight)
+        if not na(aT3)
+            line.set_x2(aT3, aRight)
+        if showLevelLbl
+            if not na(aLEntry)
+                label.set_x(aLEntry, aRight)
+            if not na(aLSl)
+                label.set_x(aLSl, aRight)
+            if not na(aLT1)
+                label.set_x(aLT1, aRight)
+            if not na(aLT2)
+                label.set_x(aLT2, aRight)
+            if not na(aLT3)
+                label.set_x(aLT3, aRight)
+    if showBoxes
+        if not na(aTpBox)
+            box.set_right(aTpBox, aRight)
+        if not na(aSlBox)
+            box.set_right(aSlBox, aRight)
+    if showZone and not na(aZone)
+        box.set_right(aZone, aRight)
+
+closedTp3 = false
+closedSl  = false
+closedTp  = false
+
+if tradeActive
+    bool tp1Hit = tradeSide == 1 ? high >= tTp1 : low <= tTp1
+    bool tp2Hit = tradeSide == 1 ? high >= tTp2 : low <= tTp2
+    bool tp3Hit = tradeSide == 1 ? high >= tTp3 : low <= tTp3
+    bool slHit  = tradeSide == 1 ? low  <= tStop : high >= tStop
+
+    int stage = tp3Hit ? 3 : tp2Hit ? 2 : tp1Hit ? 1 : 0
+    bool sameBarSl = slHit and stage > 0
+    if stage > bestStage and not sameBarSl
+        bestStage := stage
+
+    // LOOPHOLE FIX: tStop previously never moved after entry, yet the
+    // classification below (finalTp) already assumed a trade that reached
+    // TP1/TP2 and LATER round-tripped all the way back to the original
+    // stop still counts as a TP1/TP2 win. That was true in the stats but
+    // invisible on the chart -- the drawn SL line sat at the original level
+    // the whole time, so a trader following the visible SL would actually
+    // take the full -1R loss the dashboard was silently not crediting.
+    // Ratchet the real stop (and its drawing) to match what the scoring
+    // assumes: breakeven once TP1 is locked in, TP1 once TP2 is locked in.
+    if bestStage >= 1 and not sameBarSl
+        float be = tEntry
+        if tradeSide == 1 and tStop < be
+            tStop := be
+        if tradeSide == -1 and tStop > be
+            tStop := be
+    if bestStage >= 2 and not sameBarSl
+        if tradeSide == 1 and tStop < tTp1
+            tStop := tTp1
+        if tradeSide == -1 and tStop > tTp1
+            tStop := tTp1
+    if showLines and not na(aSl)
+        line.set_y1(aSl, tStop)
+        line.set_y2(aSl, tStop)
+    if showLevelLbl and not na(aLSl)
+        label.set_y(aLSl, tStop)
+        label.set_text(aLSl, "SL @ " + str.tostring(tStop, format.mintick))
+    if showBoxes and not na(aSlBox)
+        // use max/min rather than assuming entry is always on top for
+        // longs (bottom for shorts) -- once ratcheted past TP1, tStop can
+        // sit ABOVE entry (long) / below entry (short), which would
+        // otherwise invert the box
+        box.set_top(aSlBox, math.max(tEntry, tStop))
+        box.set_bottom(aSlBox, math.min(tEntry, tStop))
+
+    bool finalTp3 = not sameBarSl and bestStage == 3
+    bool finalSl  = slHit and (bestStage == 0 or sameBarSl)
+    bool finalTp  = slHit and not sameBarSl and bestStage > 0 and bestStage < 3
+
+    if finalTp3 or finalSl or finalTp
+        closedTp3 := finalTp3
+        closedSl  := finalSl
+        closedTp  := finalTp
+        float resR = finalTp3 ? tp3R : finalTp and bestStage == 2 ? tp2R : finalTp and bestStage == 1 ? tp1R : -1.0
+
+        bool isWin = resR > 0
+        sClosed += 1
+        sR      += resR
+        if isWin
+            sWins   += 1
+            sGrossWin += resR
+            sCurWin += 1
+            sCurLos := 0
+            sMaxWin := math.max(sMaxWin, sCurWin)
+            sStreak := sCurWin
+        else
+            sGrossLos += 1.0
+            sCurLos += 1
+            sCurWin := 0
+            sMaxLos := math.max(sMaxLos, sCurLos)
+            sStreak := -sCurLos
+        if tradeSide == 1
+            sLong += 1
+            sLongWin += isWin ? 1 : 0
+        else
+            sShort += 1
+            sShortWin += isWin ? 1 : 0
+        if finalTp3
+            sTp3 += 1
+        else if finalTp and bestStage == 2
+            sTp2 += 1
+        else if finalTp and bestStage == 1
+            sTp1 += 1
+        else if finalSl
+            sSl += 1
+
+        int _clSpan   = not na(tradeBar) ? bar_index - tradeBar : 0
+        int _clCap    = int(math.round(_clSpan * maxZonePct / 100))
+        int closeEdge = tradeBar + math.max(3, _clCap)
+        if showLines
+            if not na(aEntry)
+                line.set_x2(aEntry, closeEdge)
+            if not na(aSl)
+                line.set_x2(aSl, closeEdge)
+            if not na(aT1)
+                line.set_x2(aT1, closeEdge)
+            if not na(aT2)
+                line.set_x2(aT2, closeEdge)
+            if not na(aT3)
+                line.set_x2(aT3, closeEdge)
+        if showBoxes
+            if not na(aTpBox)
+                box.set_right(aTpBox, closeEdge)
+            if not na(aSlBox)
+                box.set_right(aSlBox, closeEdge)
+        if showZone and not na(aZone)
+            box.set_right(aZone, closeEdge)
+        if showLevelLbl
+            if not na(aLEntry)
+                label.set_x(aLEntry, closeEdge)
+            if not na(aLSl)
+                label.set_x(aLSl, closeEdge)
+            if not na(aLT1)
+                label.set_x(aLT1, closeEdge)
+            if not na(aLT2)
+                label.set_x(aLT2, closeEdge)
+            if not na(aLT3)
+                label.set_x(aLT3, closeEdge)
+
+        int    rStage   = finalTp3 ? 3 : finalTp ? bestStage : 0
+        float  resPrice = finalTp3 ? tTp3 : finalTp and rStage == 2 ? tTp2 : finalTp and rStage == 1 ? tTp1 : tStop
+        string resTxt   = finalTp3 ? "TP3 ✔ WIN " + f_signedR(resR) : finalTp ? "TP" + str.tostring(rStage) + " ✔ WIN " + f_signedR(resR) : "SL ✘ LOSS -1R"
+        color  resCol   = resR >= 0 ? longCol : shortCol
+        string resStyle = tradeSide == 1 ? (resR >= 0 ? label.style_label_down : label.style_label_up) : (resR >= 0 ? label.style_label_up : label.style_label_down)
+
+        if showExitLbl
+            aExit := label.new(closeEdge, resPrice, resTxt, style = resStyle, color = color.new(resCol, 0), textcolor = color.white, size = size.small)
+
+        tradeViz tv = tradeViz.new(aEntry, aSl, aT1, aT2, aT3, aTpBox, aSlBox, aZone, aSig, aLEntry, aLSl, aLT1, aLT2, aLT3, aZlbl, aExit)
+        array.push(history, tv)
+        while array.size(history) > maxHist
+            tradeViz old = array.shift(history)
+            line.delete(old.e)
+            line.delete(old.s)
+            line.delete(old.t1)
+            line.delete(old.t2)
+            line.delete(old.t3)
+            box.delete(old.tb)
+            box.delete(old.sb)
+            box.delete(old.zb)
+            label.delete(old.sg)
+            label.delete(old.le)
+            label.delete(old.ls)
+            label.delete(old.l1)
+            label.delete(old.l2)
+            label.delete(old.l3)
+            label.delete(old.zl)
+            label.delete(old.ex)
+
+        aEntry := na
+        aSl := na
+        aT1 := na
+        aT2 := na
+        aT3 := na
+        aTpBox := na
+        aSlBox := na
+        aZone := na
+        aSig := na
+        aLEntry := na
+        aLSl := na
+        aLT1 := na
+        aLT2 := na
+        aLT3 := na
+        aZlbl := na
+        aExit := na
+
+        tradeActive := false
+        tradeSide   := 0
+        tradeBar    := na
+        tEntry := na
+        tStop := na
+        tTp1 := na
+        tTp2 := na
+        tTp3 := na
+        bestStage := 0
+
+takeSig = (sigLong or sigShort) and not tradeActive and not closedTp3 and not closedSl and not closedTp and not na(atr)
+
+if takeSig
+    bool  isLong  = sigLong
+    int   side    = isLong ? 1 : -1
+    float sc      = isLong ? bullStr : bearStr
+    float lvl     = isLong ? levelBull : levelBear
+    int   zStart  = isLong ? startBull : startBear
+    bool  isChoCh = showCHoCH and (isLong ? lastBreakDir == -1 : lastBreakDir == 1)
+
+    float zoneTop = isLong ? lvl : lvl + chwidth
+    float zoneBot = isLong ? lvl - chwidth : lvl
+
+    float entv    = close
+    float rawStop = isLong ? zoneBot - atr * slBufAtr : zoneTop + atr * slBufAtr
+    float risk0   = math.abs(entv - rawStop)
+    float maxR    = atr * maxRiskAtr
+    float minR    = atr * minRiskAtr
+    float risk    = math.min(math.max(risk0, minR), maxR)
+    float stopv   = isLong ? entv - risk : entv + risk
+    float t1      = isLong ? entv + risk * tp1R : entv - risk * tp1R
+    float t2      = isLong ? entv + risk * tp2R : entv - risk * tp2R
+    float t3      = isLong ? entv + risk * tp3R : entv - risk * tp3R
+
+    tradeActive := true
+    tradeSide   := side
+    tradeBar    := bar_index
+    tEntry      := entv
+    tStop       := stopv
+    tTp1        := t1
+    tTp2        := t2
+    tTp3        := t3
+    bestStage   := 0
+    tradeScore  := sc
+    lastSigBar  := bar_index
+    lastSigSide := side
+    lastWasChoCh := isChoCh
+    lastBreakDir := side
+    sTotalSig   += 1
+    if isLong
+        shActive := false
+    else
+        slActive := false
+
+    color c   = isLong ? longCol : shortCol
+    int   xr  = bar_index + levelLen
+    string tag = isChoCh ? "CHoCH" : "BOS"
+
+    if showZone
+        int zoneFillT = int(math.max(45, zoneTransp - sc * 3))
+        int zoneBordT = int(math.max(20, 70 - sc * 4))
+        aZone := box.new(zStart, zoneTop, xr, zoneBot, xloc = xloc.bar_index, bgcolor = color.new(f_zone_base(isLong), zoneFillT), border_color = color.new(f_zone_base(isLong), zoneBordT), border_width = 1)
+        if showZoneLbl
+            string zt = tag + "  " + f_stars(sc) + " " + str.tostring(math.round(sc * 10) / 10) + "/10"
+            aZlbl := label.new(math.round((zStart + bar_index) / 2), (zoneTop + zoneBot) / 2, zt, xloc = xloc.bar_index, style = label.style_label_center, color = color.new(f_zone_base(isLong), 100), textcolor = c, size = f_size(lblSizeOpt), textalign = text.align_center)
+
+    if showSignal
+        string head = (isLong ? "STRONG LONG BREAKOUT" : "STRONG SHORT BREAKOUT") + "  [" + tag + "]"
+        string txt  = showStars ? head + "\n" + f_stars(sc) + "  " + str.tostring(math.round(sc * 10) / 10) + "/10  " + f_tier(sc) : head
+        aSig := label.new(bar_index, isLong ? low : high, txt, style = isLong ? label.style_label_up : label.style_label_down, color = color.new(c, 6), textcolor = color.white, size = f_size(lblSizeOpt))
+
+    if showBoxes
+        float tpTop = isLong ? t3 : entv
+        float tpBot = isLong ? entv : t3
+        float slTop = isLong ? entv : stopv
+        float slBot = isLong ? stopv : entv
+        aTpBox := box.new(bar_index, tpTop, xr, tpBot, xloc = xloc.bar_index, bgcolor = color.new(tpFill, 80), border_color = color.new(c, 35), border_width = 1)
+        aSlBox := box.new(bar_index, slTop, xr, slBot, xloc = xloc.bar_index, bgcolor = color.new(slFill, 80), border_color = color.new(shortCol, 45), border_width = 1)
+
+    if showLines
+        aEntry := line.new(bar_index, entv,  xr, entv,  xloc = xloc.bar_index, color = color.new(c, 0),  width = 2, style = line.style_solid)
+        aSl    := line.new(bar_index, stopv, xr, stopv, xloc = xloc.bar_index, color = color.new(shortCol, 10), width = 1, style = line.style_dashed)
+        aT1    := line.new(bar_index, t1, xr, t1, xloc = xloc.bar_index, color = color.new(c, 12), width = 1, style = line.style_solid)
+        aT2    := line.new(bar_index, t2, xr, t2, xloc = xloc.bar_index, color = color.new(c, 30), width = 1, style = line.style_solid)
+        aT3    := line.new(bar_index, t3, xr, t3, xloc = xloc.bar_index, color = color.new(c, 48), width = 1, style = line.style_solid)
+        if showLevelLbl
+            string dw = isLong ? "LONG" : "SHORT"
+            aLEntry := label.new(xr, entv,  dw + " @ " + str.tostring(entv, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 0), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLSl    := label.new(xr, stopv, "SL @ " + str.tostring(stopv, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(shortCol, 10), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLT1    := label.new(xr, t1, "TP1 " + str.tostring(tp1R, "#.#") + "R @ " + str.tostring(t1, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 10), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLT2    := label.new(xr, t2, "TP2 " + str.tostring(tp2R, "#.#") + "R @ " + str.tostring(t2, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 26), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLT3    := label.new(xr, t3, "TP3 " + str.tostring(tp3R, "#.#") + "R @ " + str.tostring(t3, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 42), textcolor = color.white, size = f_size(lblSizeOpt))
+
+winRate = sClosed > 0 ? sWins / sClosed * 100.0 : 0.0
+avgR    = sClosed > 0 ? sR / sClosed : 0.0
+pf      = sGrossLos > 0 ? sGrossWin / sGrossLos : sGrossWin > 0 ? 999.0 : 0.0
+longWR  = sLong  > 0 ? sLongWin  / sLong  * 100.0 : 0.0
+shortWR = sShort > 0 ? sShortWin / sShort * 100.0 : 0.0
+tp1Rate = sClosed > 0 ? sTp1 / sClosed * 100.0 : 0.0
+tp2Rate = sClosed > 0 ? sTp2 / sClosed * 100.0 : 0.0
+tp3Rate = sClosed > 0 ? sTp3 / sClosed * 100.0 : 0.0
+slRate  = sClosed > 0 ? sSl  / sClosed * 100.0 : 0.0
+
+bestDir = sLong == 0 and sShort == 0 ? "—" : sLong > 0 and sShort == 0 ? "LONG" : sShort > 0 and sLong == 0 ? "SHORT" : longWR > shortWR ? "LONG" : shortWR > longWR ? "SHORT" : "EVEN"
+streakTxt = sStreak > 0 ? "W" + str.tostring(sStreak) : sStreak < 0 ? "L" + str.tostring(math.abs(sStreak)) : "—"
+pfTxt = pf >= 999.0 ? "INF" : str.tostring(pf, "#.##")
+
+statusTxt = tradeActive ? "TRADE ACTIVE" : "WAITING"
+activeTxt = tradeActive ? (tradeSide == 1 ? "LONG" : "SHORT") : "—"
+lastTxt   = lastSigSide == 1 ? "LONG" : lastSigSide == -1 ? "SHORT" : "—"
+lastScoreTxt = na(tradeScore) ? "—" : (lastWasChoCh ? "CHoCH " : "BOS ") + f_stars(tradeScore) + " " + str.tostring(math.round(tradeScore * 10) / 10) + "/10"
+
+color statusC = tradeActive ? longCol : neutralCol
+color wrC     = winRate >= 55 ? goodCol : winRate >= 45 ? color.rgb(230, 190, 70) : badCol
+color pfC     = pf >= 1.5 ? goodCol : pf >= 1.0 ? color.rgb(230, 190, 70) : badCol
+
+var int dashRows = 13
+var table dash = table.new(f_pos(dashPosOpt), 2, dashRows, frame_color = color.new(panelBorder, 0), frame_width = 1, border_width = 1, border_color = color.new(panelBorder, 30))
+
+if barstate.islast and showDash
+    ps = f_size(dashSizeOpt)
+    table.clear(dash, 0, 0, 1, dashRows - 1)
+
+    table.cell(dash, 0, 0, "STRONG BREAKOUT", text_color = txtHi, text_size = ps, text_halign = text.align_left, bgcolor = panelHdr)
+    table.cell(dash, 1, 0, "SIGNALS", text_color = longCol, text_size = ps, text_halign = text.align_center, bgcolor = panelHdr)
+
+    table.cell(dash, 0, 1, "Status", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBg)
+    table.cell(dash, 1, 1, statusTxt, text_color = statusC, text_size = ps, text_halign = text.align_center, bgcolor = panelBg)
+
+    table.cell(dash, 0, 2, "Active Trade", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBgAlt)
+    table.cell(dash, 1, 2, activeTxt, text_color = tradeSide == 1 ? longCol : tradeSide == -1 ? shortCol : neutralCol, text_size = ps, text_halign = text.align_center, bgcolor = panelBgAlt)
+
+    table.cell(dash, 0, 3, "Last Signal", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBg)
+    table.cell(dash, 1, 3, lastTxt + "  " + lastScoreTxt, text_color = lastSigSide == 1 ? longCol : lastSigSide == -1 ? shortCol : neutralCol, text_size = ps, text_halign = text.align_center, bgcolor = panelBg)
+
+    table.cell(dash, 0, 4, "Total Signals", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBgAlt)
+    table.cell(dash, 1, 4, str.tostring(sTotalSig), text_color = txtHi, text_size = ps, text_halign = text.align_center, bgcolor = panelBgAlt)
+
+    table.cell(dash, 0, 5, "Win Rate", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBg)
+    table.cell(dash, 1, 5, str.tostring(winRate, "#.#") + "%", text_color = wrC, text_size = ps, text_halign = text.align_center, bgcolor = panelBg)
+
+    table.cell(dash, 0, 6, "Closed Trades", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBgAlt)
+    table.cell(dash, 1, 6, str.tostring(sClosed), text_color = txtHi, text_size = ps, text_halign = text.align_center, bgcolor = panelBgAlt)
+
+    table.cell(dash, 0, 7, "Profit Factor", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBg)
+    table.cell(dash, 1, 7, pfTxt, text_color = pfC, text_size = ps, text_halign = text.align_center, bgcolor = panelBg)
+
+    table.cell(dash, 0, 8, "Avg R / Trade", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBgAlt)
+    table.cell(dash, 1, 8, f_signedR(avgR), text_color = avgR >= 0 ? goodCol : badCol, text_size = ps, text_halign = text.align_center, bgcolor = panelBgAlt)
+
+    table.cell(dash, 0, 9, "Best Direction", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBg)
+    table.cell(dash, 1, 9, bestDir, text_color = bestDir == "LONG" ? longCol : bestDir == "SHORT" ? shortCol : neutralCol, text_size = ps, text_halign = text.align_center, bgcolor = panelBg)
+
+    table.cell(dash, 0, 10, "L / S Win%", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBgAlt)
+    table.cell(dash, 1, 10, str.tostring(longWR, "#.#") + " / " + str.tostring(shortWR, "#.#"), text_color = txtHi, text_size = ps, text_halign = text.align_center, bgcolor = panelBgAlt)
+
+    table.cell(dash, 0, 11, "Streak", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelBg)
+    table.cell(dash, 1, 11, streakTxt + "  (max W" + str.tostring(sMaxWin) + "/L" + str.tostring(sMaxLos) + ")", text_color = sStreak >= 0 ? goodCol : badCol, text_size = ps, text_halign = text.align_center, bgcolor = panelBg)
+
+    if showHeatRow
+        table.cell(dash, 0, 12, "TP1/2/3 · SL", text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = panelHdr)
+        table.cell(dash, 1, 12, str.tostring(tp1Rate, "#") + "/" + str.tostring(tp2Rate, "#") + "/" + str.tostring(tp3Rate, "#") + " · " + str.tostring(slRate, "#") + "%", text_color = txtHi, text_size = ps, text_halign = text.align_center, bgcolor = panelHdr)
+    else
+        table.cell(dash, 0, 12, "", bgcolor = panelHdr)
+        table.cell(dash, 1, 12, "", bgcolor = panelHdr)
+
+alertcondition(sigLong,   "Strong Long Breakout",  "Strong Breakout Signals: STRONG LONG breakout on {{ticker}} {{interval}}.")
+alertcondition(sigShort,  "Strong Short Breakout", "Strong Breakout Signals: STRONG SHORT breakout on {{ticker}} {{interval}}.")
+alertcondition(closedTp3, "TP3 Hit",  "Strong Breakout Signals: TP3 hit on {{ticker}} {{interval}}.")
+alertcondition(closedTp,  "Partial TP Exit", "Strong Breakout Signals: protected TP exit on {{ticker}} {{interval}}.")
+alertcondition(closedSl,  "SL Hit",   "Strong Breakout Signals: SL hit on {{ticker}} {{interval}}.")
