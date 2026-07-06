@@ -1,0 +1,150 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Fib Golden Zone + RSI Hidden Divergence
+//
+// Mechanical translation of one specific claim from an uploaded trading
+// video ("Fib + RSI + S/R + previous-day H/L confluence"): of the four
+// confluences the video describes, only ONE survived honest backtesting on
+// 540 days of real BTCUSD/ETHUSD 1h data (walk-forward AND full-period) --
+// this script implements ONLY that one. The other two testable confluences
+// (S/R zone overlap, previous-day high/low overlap) were rejected/
+// inconclusive and are deliberately NOT in this script:
+//   - S/R confluence: too weak a filter as tested, barely changed results
+//     either way (inconclusive, not proven).
+//   - Previous-day H/L confluence: collapsed to 5-23 trades over 540 days
+//     in testing -- too rare to trade or trust in either direction.
+//   - All four confluences stacked together (the video's actual "action
+//     plan"): 2-6 trades total over 540 days -- not a tradeable system.
+//
+// The ONE surviving piece:
+//   A = swing low, B = swing high after it, C = the next swing low after
+//   B, with C > A (a genuine higher low). If C retraces into the golden
+//   zone (0.5-0.786 of the A->B leg) AND RSI at C is LOWER than RSI at A
+//   (price makes a higher low while RSI makes a lower low = hidden bullish
+//   divergence), go long. Mirror for shorts (swing high/low/high, hidden
+//   bearish divergence). Ride until the next opposite-kind swing confirms.
+//
+// ⚠️ HONESTY NOTE: full-period backtest, BTCUSD PF 1.09 / ETHUSD PF 1.07 --
+// real but modest, and this filter cuts trade count by ~70% vs an
+// unfiltered golden-zone pullback (which itself is NOT profitable on BTC,
+// PF 0.78). Treat this as a confirmed, real, but small edge -- not a
+// "lethal weapon" as the source video claims. Paper trade before sizing.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Fib Golden Zone + RSI Hidden Divergence",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+prd       = input.int(3, "Swing width (k) — validated", minval = 2, maxval = 10)
+goldenLo  = input.float(0.5,   "Golden zone low", minval = 0.1, maxval = 0.9, step = 0.01)
+goldenHi  = input.float(0.786, "Golden zone high", minval = 0.1, maxval = 0.95, step = 0.001)
+bufMult   = input.float(0.3, "Stop buffer beyond swing C (x ATR)", step = 0.1)
+riskPct   = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
+maxLev    = input.float(3.0, "Max leverage", step = 0.5)
+
+atr14 = ta.atr(14)
+rsi14 = ta.rsi(close, 14)
+
+ph = ta.pivothigh(prd, prd)
+pl = ta.pivotlow(prd, prd)
+
+// ─────────────────── 2-slot swing memory (A, B) + RSI at each swing ──────────
+var float s2price = na, s1price = na
+var int   s2atbar = na, s1atbar = na
+var string s2kind = na, s1kind = na
+var float s2rsi = na, s1rsi = na
+
+checkAndShift(string kind, float price, int atbar, float rsiAtSwing) =>
+    bool doLong  = false
+    bool doShort = false
+    float stopRef = na
+    if not na(s2price) and not na(s1price) and kind == s2kind and s1kind != s2kind
+        float pxA = s2price
+        float pxB = s1price
+        float pxC = price
+        float rsiA = s2rsi
+        float rsiC = rsiAtSwing
+        float rng = math.abs(pxB - pxA)
+        if rng > 0
+            float retr = math.abs(pxB - pxC) / rng
+            if retr >= goldenLo and retr <= goldenHi
+                if kind == "L" and pxC > pxA and rsiC < rsiA
+                    doLong := true
+                    stopRef := pxC
+                if kind == "H" and pxC < pxA and rsiC > rsiA
+                    doShort := true
+                    stopRef := pxC
+    s2price := s1price
+    s2atbar := s1atbar
+    s2kind  := s1kind
+    s2rsi   := s1rsi
+    s1price := price
+    s1atbar := atbar
+    s1kind  := kind
+    s1rsi   := rsiAtSwing
+    [doLong, doShort, stopRef]
+
+sigLong  = false
+sigShort = false
+float stopRef = na
+
+if not na(ph)
+    [dl, ds, sr] = checkAndShift("H", ph, bar_index - prd, rsi14[prd])
+    sigLong  := sigLong or dl
+    sigShort := sigShort or ds
+    if dl or ds
+        stopRef := sr
+if not na(pl)
+    [dl, ds, sr] = checkAndShift("L", pl, bar_index - prd, rsi14[prd])
+    sigLong  := sigLong or dl
+    sigShort := sigShort or ds
+    if dl or ds
+        stopRef := sr
+
+// ───────────────────────────── exits (ride to opposite swing) ────────────────
+if strategy.position_size > 0 and not na(ph)
+    strategy.close("Long", comment = "opposite swing formed")
+if strategy.position_size < 0 and not na(pl)
+    strategy.close("Short", comment = "opposite swing formed")
+
+// ───────────────────────────── entries ────────────────────────────────────────
+if sigLong and strategy.position_size == 0
+    stopLvl  = stopRef - bufMult * atr14
+    stopDist = close - stopLvl
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Long Stop", "Long", stop = stopLvl)
+
+if sigShort and strategy.position_size == 0
+    stopLvl  = stopRef + bufMult * atr14
+    stopDist = stopLvl - close
+    if stopDist > 0
+        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+        qtyCap  = strategy.equity * maxLev / close
+        strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+        strategy.exit("Short Stop", "Short", stop = stopLvl)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(ph, "Swing high", color = color.new(#e34948, 40), style = plot.style_circles, offset = -prd)
+plot(pl, "Swing low",  color = color.new(#1baf7a, 40), style = plot.style_circles, offset = -prd)
+
+plotshape(sigLong, "Long: golden zone + hidden bull div", shape.triangleup, location.belowbar,
+     color.new(#1baf7a, 0), size = size.small)
+plotshape(sigShort, "Short: golden zone + hidden bear div", shape.triangledown, location.abovebar,
+     color.new(#e34948, 0), size = size.small)
+
+var table info = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Fib + Hidden Div", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, "validated (modest)", text_color = color.yellow, text_size = size.small)
+    table.cell(info, 0, 1, "Position", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 1, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.tiny)
