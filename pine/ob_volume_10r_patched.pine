@@ -1,0 +1,274 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// LOOPHOLE-PATCHED version of the user's "OB + Volume 2x Swing Strategy (10R)".
+// Original concept preserved exactly (CHoCh + volume-spike filter -> find the
+// last opposite-colored candle before the move = the order block -> limit
+// entry on a pullback touch -> stop at the OB's far edge -> fixed R target) —
+// this only closes four gaps found on review:
+//
+//   FIX 1 (critical): a resting limit order that never fills was never
+//     canceled anywhere in the original. It stayed live indefinitely and
+//     could fill much later at a price disconnected from the setup that
+//     created it — and a fresh opposite CHoCh could arm a second setup
+//     while the first order was still pending, risking two live orders on
+//     opposite sides at once. Fixed with an explicit fill deadline
+//     (max_fill_bars) that cancels the order, a wait-to-touch expiry on
+//     the OB zone itself (max_wait_bars), and a guard that blocks arming a
+//     new setup while an order is still pending.
+//   FIX 2: added a max-hold time-stop (max_hold_bars). A 10R target is by
+//     design rarely reached; without a time-stop a trade can sit open
+//     indefinitely waiting for either edge, tying up capital with no
+//     release valve.
+//   FIX 3: bull_choch/bear_choch compared close against last_ph[1]/
+//     last_pl[1] (the PREVIOUS bar's swing level) instead of the current
+//     one — on the specific bar a new pivot confirms, this checked against
+//     a stale, superseded level. Now compares against the current value.
+//   FIX 4: position size is capped by a max-leverage input, same gap as
+//     the companion ChoCh GZ script (risk_amt/rd has no ceiling — a tight
+//     stop distance could imply unrealistic leverage).
+// ─────────────────────────────────────────────────────────────────────────────
+strategy(
+     title       = "OB + Volume 2x Swing Strategy (10R, Patched)",
+     shorttitle  = "OB+Vol 10R (Patched)",
+     overlay     = true,
+     initial_capital    = 100000,
+     default_qty_type   = strategy.cash,
+     default_qty_value  = 100000,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.04,
+     calc_on_every_tick = false
+ )
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════
+grp1 = "Pivot / Order Block Settings"
+left_len   = input.int(6,  "Pivot Left Bars",  minval=1, group=grp1)
+right_len  = input.int(6,  "Pivot Right Bars", minval=1, group=grp1)
+
+grp2 = "Volume Filter"
+vol_mult   = input.float(2.0, "Volume Spike Multiplier (x MA)", minval=1.0, step=0.1, group=grp2)
+vol_ma_len = input.int(20,   "Volume MA Length",                minval=5,             group=grp2)
+
+grp3 = "Risk Management"
+rr_target  = input.float(10.0, "Risk : Reward Target (R)",  minval=1.0, step=0.5, group=grp3)
+risk_pct   = input.float(2.0,  "Risk Per Trade (% of equity)", minval=0.1, step=0.1, group=grp3)
+max_lev    = input.float(3.0, "Max Leverage (position-size cap)", minval=1.0, step=0.5, group=grp3)
+// FIX 1: expiry windows so a setup/order can't wait or rest forever.
+max_wait_bars = input.int(30, "Max Bars to Wait for OB Touch (zone expiry)", minval=1, group=grp3)
+max_fill_bars = input.int(20, "Max Bars for Limit Order to Fill (order expiry)", minval=1, group=grp3)
+// FIX 2: a 10R target may never be reached — cap how long a trade can run.
+max_hold_bars = input.int(300, "Max Bars to Hold an Open Trade (time-stop)", minval=1, group=grp3)
+
+grp4 = "Visuals"
+show_ob    = input.bool(true, "Show Order Block Zones",  group=grp4)
+show_pivot = input.bool(true, "Show Swing High/Low Lines", group=grp4)
+
+// ══════════════════════════════════════════════════════════════
+// INDICATORS
+// ══════════════════════════════════════════════════════════════
+vol_ma = ta.sma(volume, vol_ma_len)
+vol_spike = volume >= vol_mult * vol_ma
+
+// Swing Pivots (non-repainting: confirmed right_len bars later)
+ph = ta.pivothigh(high, left_len, right_len)
+pl = ta.pivotlow (low,  left_len, right_len)
+
+var float last_ph = na
+var float last_pl = na
+
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+// ChoCh (Change of Character)
+// FIX 3: compare against the CURRENT swing level, not last bar's — on the
+// bar a pivot just confirms, [1] referenced the stale pre-update value.
+bull_choch = not na(last_ph) and close > last_ph
+bear_choch = not na(last_pl) and close < last_pl
+
+// ══════════════════════════════════════════════════════════════
+// ORDER BLOCK DETECTION
+// Find the LAST opposite-close candle BEFORE the breakout run
+// ══════════════════════════════════════════════════════════════
+var float ob_top   = na
+var float ob_bot   = na
+var string ob_dir  = na   // "bull" or "bear"
+var bool   ob_live = false
+var int    ob_start_bar = na   // FIX 1: when this zone was armed
+
+// FIX 1: track a resting order so it can be expired/canceled and so a
+// fresh setup can't arm on top of it.
+var bool order_pending = false
+var int  fill_deadline = na
+var int  trade_entry_bar = na  // FIX 2: for the max-hold time-stop
+
+// Search back up to 10 bars for the OB candle
+find_bull_ob_top() =>
+    result = float(na)
+    for k = 1 to 10
+        if close[k] < open[k]   // bearish (down-close) candle = Bullish OB
+            result := math.max(open[k], close[k])
+            break
+    result
+
+find_bull_ob_bot() =>
+    result = float(na)
+    for k = 1 to 10
+        if close[k] < open[k]
+            result := low[k]
+            break
+    result
+
+find_bear_ob_bot() =>
+    result = float(na)
+    for k = 1 to 10
+        if close[k] > open[k]   // bullish (up-close) candle = Bearish OB
+            result := math.min(open[k], close[k])
+            break
+    result
+
+find_bear_ob_top() =>
+    result = float(na)
+    for k = 1 to 10
+        if close[k] > open[k]
+            result := high[k]
+            break
+    result
+
+// ══════════════════════════════════════════════════════════════
+// POSITION TRACKING
+// ══════════════════════════════════════════════════════════════
+in_long  = strategy.position_size > 0
+in_short = strategy.position_size < 0
+flat     = strategy.position_size == 0
+
+var float entry_p  = na
+var float sl_p     = na
+var float tp_p     = na
+
+// FIX 1/2: a filled order is no longer "pending"; track its entry bar for
+// the time-stop, and clear that tracking once flat again.
+if not flat
+    order_pending := false
+    if na(trade_entry_bar)
+        trade_entry_bar := bar_index
+if flat
+    trade_entry_bar := na
+
+// ══════════════════════════════════════════════════════════════
+// ENTRY LOGIC: ChoCh + Volume Spike → Find OB → Limit Entry
+// ══════════════════════════════════════════════════════════════
+
+// BULLISH SETUP
+// FIX 1: don't arm a new setup while an order from a previous one is
+// still resting — prevents two live orders on opposite sides at once.
+if bull_choch and vol_spike and flat and not order_pending
+    bot = find_bull_ob_bot()
+    top = find_bull_ob_top()
+    if not na(top) and not na(bot)
+        ob_top  := top
+        ob_bot  := bot
+        ob_dir  := "bull"
+        ob_live := true
+        ob_start_bar := bar_index
+
+// BEARISH SETUP
+if bear_choch and vol_spike and flat and not order_pending
+    bot = find_bear_ob_bot()
+    top = find_bear_ob_top()
+    if not na(bot) and not na(top)
+        ob_top  := top
+        ob_bot  := bot
+        ob_dir  := "bear"
+        ob_live := true
+        ob_start_bar := bar_index
+
+// TRIGGER ENTRY when price pulls back into the OB zone
+if ob_live and flat and not order_pending
+    if ob_dir == "bull" and low <= ob_top and high >= ob_bot
+        // Price is touching the Bullish OB zone → Enter Long
+        ep   = ob_top                          // entry at top of OB body
+        slp  = ob_bot                          // SL at bottom of OB candle
+        rd   = ep - slp
+        if rd > 0
+            tpp      = ep + rr_target * rd
+            risk_amt = strategy.equity * (risk_pct / 100.0)
+            qty      = risk_amt / rd
+            qty_cap  = strategy.equity * max_lev / ep   // FIX 4
+            strategy.entry("OB Long", strategy.long, qty=math.min(qty, qty_cap), limit=ep, comment="Bull OB Entry")
+            strategy.exit ("OB Long Exit", "OB Long", stop=slp, limit=tpp)
+            entry_p  := ep
+            sl_p     := slp
+            tp_p     := tpp
+            ob_live  := false
+            order_pending := true                       // FIX 1
+            fill_deadline := bar_index + max_fill_bars   // FIX 1
+
+    else if ob_dir == "bear" and high >= ob_bot and low <= ob_top
+        // Price is touching the Bearish OB zone → Enter Short
+        ep   = ob_bot
+        slp  = ob_top
+        rd   = slp - ep
+        if rd > 0
+            tpp      = ep - rr_target * rd
+            risk_amt = strategy.equity * (risk_pct / 100.0)
+            qty      = risk_amt / rd
+            qty_cap  = strategy.equity * max_lev / ep   // FIX 4
+            strategy.entry("OB Short", strategy.short, qty=math.min(qty, qty_cap), limit=ep, comment="Bear OB Entry")
+            strategy.exit ("OB Short Exit", "OB Short", stop=slp, limit=tpp)
+            entry_p  := ep
+            sl_p     := slp
+            tp_p     := tpp
+            ob_live  := false
+            order_pending := true
+            fill_deadline := bar_index + max_fill_bars
+
+// Invalidate OB if price blows through it without entry
+if ob_live
+    if ob_dir == "bull" and close < ob_bot
+        ob_live := false
+    if ob_dir == "bear" and close > ob_top
+        ob_live := false
+
+// FIX 1: expire a zone that's waited too long without a touch.
+if ob_live and (bar_index - ob_start_bar > max_wait_bars)
+    ob_live := false
+
+// FIX 1: cancel a resting limit order that never got filled — this is the
+// gap that let stale orders sit indefinitely in the original script.
+if order_pending and flat and bar_index > fill_deadline
+    strategy.cancel("OB Long")
+    strategy.cancel("OB Short")
+    order_pending := false
+
+// FIX 2: time-stop — a 10R target may simply never arrive.
+if not flat and not na(trade_entry_bar) and (bar_index - trade_entry_bar > max_hold_bars)
+    strategy.close_all(comment="Max hold time-stop")
+
+// ══════════════════════════════════════════════════════════════
+// VISUALS
+// ══════════════════════════════════════════════════════════════
+// Swing levels
+plot(show_pivot ? last_ph : na, "Swing High", color=color.new(color.red,   40), linewidth=1, style=plot.style_stepline)
+plot(show_pivot ? last_pl : na, "Swing Low",  color=color.new(color.green, 40), linewidth=1, style=plot.style_stepline)
+
+// Volume spike highlight
+barcolor(vol_spike ? color.new(color.yellow, 60) : na, title="Volume Spike Bar")
+
+// Active OB Zone
+ob_top_plot = ob_live ? ob_top : na
+ob_bot_plot = ob_live ? ob_bot : na
+p_top = plot(show_ob ? ob_top_plot : na, "OB Top", color=color.new(color.blue, 60), style=plot.style_linebr)
+p_bot = plot(show_ob ? ob_bot_plot : na, "OB Bot", color=color.new(color.blue, 60), style=plot.style_linebr)
+fill(p_top, p_bot, color=color.new(color.blue, 85), title="OB Zone Fill")
+
+// ChoCh signals
+plotshape(bull_choch and vol_spike, "Bull ChoCh+Vol", shape.labelup,   location.belowbar, color.green, size=size.small, text="OB", textcolor=color.white)
+plotshape(bear_choch and vol_spike, "Bear ChoCh+Vol", shape.labeldown, location.abovebar, color.red,   size=size.small, text="OB", textcolor=color.white)
+
+// Entry / SL / TP levels for active trade
+plot(in_long or in_short ? entry_p : na, "Entry",       color=color.white,  linewidth=1, style=plot.style_linebr)
+plot(in_long or in_short ? sl_p    : na, "Stop Loss",   color=color.red,    linewidth=1, style=plot.style_linebr)
+plot(in_long or in_short ? tp_p    : na, "Take Profit", color=color.lime,   linewidth=2, style=plot.style_linebr)
