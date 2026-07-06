@@ -1,0 +1,257 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// LOOPHOLE-PATCHED version of the user's "CPI News Straddle Strategy v2".
+// Original concept preserved exactly (straddle a buy-stop/sell-stop around
+// price at the close of the 1H bar containing a scheduled CPI release;
+// whichever side breaks first is the trade; fixed SL + R:R target; cancel
+// if neither triggers within N bars) — this closes five gaps found on review:
+//
+//   FIX 1 (critical): the original DETECTED a stop-trigger using an already-
+//     closed bar's high/low, then called strategy.entry(stop=...) — which
+//     only fills on a LATER bar. If price spiked through the level during
+//     the news reaction and pulled back (very common), the trade could
+//     silently never fill despite the detection code "seeing" it happen.
+//     Fixed: both stop orders are now placed NATIVELY the moment the CPI
+//     bar closes, so Pine's own order engine fills whichever one price
+//     reaches first, on any subsequent bar, exactly when it happens.
+//   FIX 2: with both orders resting at once (needed for FIX 1), a genuine
+//     one-cancels-other risk appears — if price reverses hard after
+//     filling one side, the other resting order could ALSO fill later,
+//     flipping the position unintentionally. Added explicit cancellation
+//     of the opposite order the instant either side fills.
+//   FIX 3 (date bug): isSummer() treated March as winter (13:30 UTC), but
+//     US DST starts the 2nd Sunday of March (Mar 10 in 2024, Mar 9 in
+//     2025, Mar 8 in 2026) — BEFORE every March CPI date in this list
+//     (Mar 12, Mar 12, Mar 11). By the actual release, DST is already
+//     active and the correct time is 12:30 UTC. Fixed: March reclassified
+//     as DST-active.
+//   FIX 4: the hardcoded schedule ends 2026-07-09 with no warning when it
+//     runs out (Pine can't fetch a live calendar, so this list needs
+//     periodic manual extension). Added a visible on-chart warning once
+//     the current bar is within 20 days of the last known date, so the
+//     gap gets noticed instead of the strategy just going silently quiet.
+//   FIX 5: position size is now capped by a max-leverage input — a 0.3%
+//     stop distance without a ceiling implies very high effective leverage
+//     per dollar risked.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy(
+     title       = "CPI News Straddle Strategy v2 (Patched)",
+     shorttitle  = "CPI Straddle v2 (Patched)",
+     overlay     = true,
+     initial_capital    = 100000,
+     default_qty_type   = strategy.cash,
+     default_qty_value  = 10000,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.04,
+     calc_on_every_tick = false
+ )
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════
+grp2 = "Straddle Settings"
+straddle_pct = input.float(0.30, "Straddle Distance (%)",          minval=0.05, step=0.05, group=grp2) / 100
+sl_pct       = input.float(0.30, "Stop Loss Distance (%)",         minval=0.10, step=0.05, group=grp2) / 100
+rr_target    = input.float(3.0,  "R:R Target",                     minval=1.0,  step=0.5,  group=grp2)
+risk_pct     = input.float(2.0,  "Risk Per Trade (% of equity)",   minval=0.1,  step=0.1,  group=grp2)
+cancel_bars  = input.int(3,      "Cancel after N bars if no hit",  minval=1, maxval=10,    group=grp2)
+max_lev      = input.float(5.0,  "Max Leverage (position-size cap)", minval=1.0, step=0.5, group=grp2)  // FIX 5
+
+grp4 = "Visuals"
+show_zones = input.bool(true, "Show Straddle Zones", group=grp4)
+
+// ══════════════════════════════════════════════════════════════
+// CPI RELEASE SCHEDULE  (12:30 UTC summer/DST / 13:30 UTC winter)
+// All major US CPI releases 2024-2026
+// Format: timestamp("UTC", year, month, day, hour, minute)
+// ══════════════════════════════════════════════════════════════
+// FIX 3: US DST starts the 2nd Sunday of March, which in every year in
+// this schedule (2024-2026) falls BEFORE the March CPI release date —
+// so March must be treated as DST-active (12:30 UTC), not winter.
+isSummer(m) => m >= 3 and m <= 10
+
+cpiTime(yr, mo, dy) =>
+    h = isSummer(mo) ? 12 : 13
+    timestamp("UTC", yr, mo, dy, h, 30, 0)
+
+cpi_times = array.new_int(0)
+
+// 2024
+array.push(cpi_times, cpiTime(2024, 1,  11))
+array.push(cpi_times, cpiTime(2024, 2,  13))
+array.push(cpi_times, cpiTime(2024, 3,  12))
+array.push(cpi_times, cpiTime(2024, 4,  10))
+array.push(cpi_times, cpiTime(2024, 5,  15))
+array.push(cpi_times, cpiTime(2024, 6,  12))
+array.push(cpi_times, cpiTime(2024, 7,  11))
+array.push(cpi_times, cpiTime(2024, 8,  14))
+array.push(cpi_times, cpiTime(2024, 9,  11))
+array.push(cpi_times, cpiTime(2024, 10, 10))
+array.push(cpi_times, cpiTime(2024, 11, 13))
+array.push(cpi_times, cpiTime(2024, 12, 11))
+
+// 2025
+array.push(cpi_times, cpiTime(2025, 1,  15))
+array.push(cpi_times, cpiTime(2025, 2,  12))
+array.push(cpi_times, cpiTime(2025, 3,  12))
+array.push(cpi_times, cpiTime(2025, 4,  10))
+array.push(cpi_times, cpiTime(2025, 5,  13))
+array.push(cpi_times, cpiTime(2025, 6,  11))
+array.push(cpi_times, cpiTime(2025, 7,  11))
+array.push(cpi_times, cpiTime(2025, 8,  13))
+array.push(cpi_times, cpiTime(2025, 9,  10))
+array.push(cpi_times, cpiTime(2025, 10,  9))
+array.push(cpi_times, cpiTime(2025, 11, 12))
+array.push(cpi_times, cpiTime(2025, 12, 10))
+
+// 2026
+array.push(cpi_times, cpiTime(2026, 1,  14))
+array.push(cpi_times, cpiTime(2026, 2,  11))
+array.push(cpi_times, cpiTime(2026, 3,  11))
+array.push(cpi_times, cpiTime(2026, 4,  10))
+array.push(cpi_times, cpiTime(2026, 5,  13))
+array.push(cpi_times, cpiTime(2026, 6,  10))
+array.push(cpi_times, cpiTime(2026, 7,   9))
+// FIX 4: this list needs periodic manual extension — Pine cannot fetch a
+// live economic calendar. See the on-chart warning below once we run low.
+
+// ══════════════════════════════════════════════════════════════
+// DETECT: Is current bar the setup bar (1H bar containing a CPI release)?
+// ══════════════════════════════════════════════════════════════
+tf_ms = timeframe.multiplier * 60000
+
+is_cpi_bar = false
+matched_release = int(na)
+
+for i = 0 to array.size(cpi_times) - 1
+    rt = array.get(cpi_times, i)
+    if rt >= time and rt < time + tf_ms
+        is_cpi_bar     := true
+        matched_release := rt
+
+// FIX 4: warn on-chart once we're within 20 days of the last scheduled
+// event — the strategy will otherwise go silently dormant after that.
+last_known = array.get(cpi_times, array.size(cpi_times) - 1)
+schedule_running_low = time > last_known - 20 * 86400000
+
+// ══════════════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════════════
+var float ref_price  = na
+var float buy_stop   = na
+var float sell_stop  = na
+var bool  pending    = false
+var int   bars_since = 0
+var int   setup_bar  = na   // FIX 1: bar the straddle was armed, for expiry
+
+flat = strategy.position_size == 0
+
+// FIX 1/2: detect fresh fills so we can cancel the opposite resting order.
+var float prev_position_size = 0.0
+entered_long  = strategy.position_size > 0 and prev_position_size <= 0
+entered_short = strategy.position_size < 0 and prev_position_size >= 0
+prev_position_size := strategy.position_size
+
+// ══════════════════════════════════════════════════════════════
+// STEP 1 — ON THE CPI BAR: arm BOTH stop orders immediately at close.
+// FIX 1: placing both orders now (instead of reactively after detecting a
+// touch on an already-closed bar) lets Pine's own engine fill whichever
+// one price reaches first, on any later bar, exactly when it happens.
+// ══════════════════════════════════════════════════════════════
+if is_cpi_bar and not pending and flat
+    ref_price  := close
+    buy_stop   := close * (1 + straddle_pct)
+    sell_stop  := close * (1 - straddle_pct)
+    pending    := true
+    bars_since := 0
+    setup_bar  := bar_index
+
+    slp_long  = buy_stop  * (1 - sl_pct)
+    tpp_long  = buy_stop  + rr_target * (buy_stop - slp_long)
+    slp_short = sell_stop * (1 + sl_pct)
+    tpp_short = sell_stop - rr_target * (slp_short - sell_stop)
+
+    risk_amt   = strategy.equity * (risk_pct / 100.0)
+    qty_long   = math.min(risk_amt / (buy_stop - slp_long),  strategy.equity * max_lev / buy_stop)
+    qty_short  = math.min(risk_amt / (slp_short - sell_stop), strategy.equity * max_lev / sell_stop)
+
+    strategy.entry("CPI Long",  strategy.long,  qty=qty_long,  stop=buy_stop)
+    strategy.entry("CPI Short", strategy.short, qty=qty_short, stop=sell_stop)
+    strategy.exit("CPI LX", "CPI Long",  stop=slp_long,  limit=tpp_long)
+    strategy.exit("CPI SX", "CPI Short", stop=slp_short, limit=tpp_short)
+
+    if show_zones
+        label.new(bar_index, high * 1.001,
+                  "CPI\n" + str.tostring(math.round(close, 0)),
+                  color=color.orange, textcolor=color.white,
+                  style=label.style_label_down, size=size.small)
+        line.new(bar_index, buy_stop,  bar_index + cancel_bars, buy_stop,
+                 color=color.green, width=2, style=line.style_dashed)
+        line.new(bar_index, sell_stop, bar_index + cancel_bars, sell_stop,
+                 color=color.red,   width=2, style=line.style_dashed)
+
+// ══════════════════════════════════════════════════════════════
+// STEP 2 — MONITOR: OCO cancellation + expiry
+// ══════════════════════════════════════════════════════════════
+if pending
+    bars_since := bars_since + 1
+
+    // FIX 2: one side filled -> cancel the other so it can't ALSO fill
+    // later and flip the position unintentionally.
+    if entered_long
+        strategy.cancel("CPI Short")
+        pending := false
+    if entered_short
+        strategy.cancel("CPI Long")
+        pending := false
+
+    // Cancel both if still pending (neither filled) after N bars.
+    if pending and flat and bars_since >= cancel_bars
+        strategy.cancel("CPI Long")
+        strategy.cancel("CPI Short")
+        pending := false
+        if show_zones
+            label.new(bar_index, low * 0.999, "CPI:\nCancelled",
+                      color=color.gray, textcolor=color.white,
+                      style=label.style_label_up, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════
+// VISUALS
+// ══════════════════════════════════════════════════════════════
+bgcolor(is_cpi_bar ? color.new(color.orange, 75) : na, title="CPI Bar")
+
+buy_plt  = pending ? buy_stop  : na
+sell_plt = pending ? sell_stop : na
+p1 = plot(buy_plt,  "Buy Stop",  color=color.new(color.lime, 30), linewidth=2, style=plot.style_linebr)
+p2 = plot(sell_plt, "Sell Stop", color=color.new(color.red,  30), linewidth=2, style=plot.style_linebr)
+fill(p1, p2, color=color.new(color.orange, 88), title="Straddle Zone")
+
+// FIX 4: visible warning once the hardcoded schedule is running low.
+if schedule_running_low and barstate.islast
+    label.new(bar_index, high * 1.02,
+              "⚠ CPI schedule ends soon —\nextend cpi_times in the script",
+              color=color.red, textcolor=color.white,
+              style=label.style_label_down, size=size.normal)
+
+// ══════════════════════════════════════════════════════════════
+// INFO TABLE
+// ══════════════════════════════════════════════════════════════
+if barstate.islast
+    var table t = table.new(position.top_right, 2, 6,
+                            bgcolor=color.new(color.black, 65), border_width=1)
+    table.cell(t, 0, 0, "CPI STRADDLE v2 (Patched)", text_color=color.orange, text_size=size.small,
+               bgcolor=color.new(color.gray, 80))
+    table.cell(t, 1, 0, str.tostring(array.size(cpi_times)) + " events", text_color=color.yellow,
+               text_size=size.small, bgcolor=color.new(color.gray, 80))
+    table.cell(t, 0, 1, "R:R Target",  text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 1, str.tostring(rr_target) + "R", text_color=color.lime, text_size=size.tiny)
+    table.cell(t, 0, 2, "Straddle %", text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 2, str.tostring(straddle_pct * 100, "#.##") + "%", text_color=color.lime, text_size=size.tiny)
+    table.cell(t, 0, 3, "SL %",       text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 3, str.tostring(sl_pct * 100, "#.##") + "%", text_color=color.red, text_size=size.tiny)
+    table.cell(t, 0, 4, "Pending",    text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 4, pending ? "YES" : "NO",
+               text_color=pending ? color.orange : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 5, "Schedule",   text_color=color.white, text_size=size.tiny)
+    table.cell(t, 1, 5, schedule_running_low ? "RUNNING LOW" : "OK",
+               text_color=schedule_running_low ? color.red : color.lime, text_size=size.tiny)
