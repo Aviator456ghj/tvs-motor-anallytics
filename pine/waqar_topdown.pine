@@ -18,19 +18,27 @@
 //      CHoCH) -- the video's "leaving a runner for the larger trend".
 //
 // ⚠️ SINGLE-TIMEFRAME SIMPLIFICATION: the original backtest used REAL 1h
-// (external range) + 15m (pullback leg) data. An earlier version of this
-// script tried to reproduce that exactly via request.security() pulling a
+// (external range, k=5) + 15m (pullback leg, k=3) data -- roughly a 6-7x
+// scale separation between the two. An earlier version of this script
+// tried to reproduce that exactly via request.security() pulling a
 // stateful 1h function into a 15m chart -- that does NOT compile: Pine
 // disallows request.security() on a user function that contains var/varip
 // state. This version collapses both steps onto ONE chart using two swing
-// widths (kExt = external/coarse, kLeg = pullback-leg/fine), the same
-// pattern already used successfully in internal_topup.pine. Recommended:
-// run on the 1-HOUR chart with the defaults below (kExt=5 matches what was
-// backtested; kLeg=2 approximates the finer 15m structure on this single
-// timeframe). Behavior will be directionally similar to, but not numerically
-// identical to, the reported backtest (PF 1.35/+10% BTC, PF 2.64/+96% ETH
-// in "ride" mode, on real separate 1h+15m data) -- compare against the
-// chart before trusting it, and paper trade first.
+// widths (kExt = external/coarse, kLeg = pullback-leg/fine).
+//
+// RUN THIS ON THE 15-MINUTE CHART, with kExt=20 and kLeg=3 (the defaults
+// below). kExt=20 on 15m bars spans the same ~5 hours each side as the
+// original 1h k=5 external swing; kLeg=3 matches the original 15m k=3
+// exactly (it was already native to that timeframe). An earlier version of
+// this note wrongly suggested running on the 1h chart with kExt=5/kLeg=2 --
+// that collapses the two swing widths to nearly the same scale (a ~2.5x
+// ratio instead of ~6.7x), so the 2-leg pullback signature almost never
+// resolves and the strategy can end up placing zero trades. If you still
+// see very few trades, try widening the ratio further (e.g. kExt=24-30).
+// Behavior will be directionally similar to, but not numerically identical
+// to, the reported backtest (PF 1.35/+10% BTC, PF 2.64/+96% ETH in "ride"
+// mode, on real separate 1h+15m data) -- compare against the chart before
+// trusting it, and paper trade first.
 //
 // ⚠️ HONESTY NOTE ON THE EDGE ITSELF: the video's own literal "1:3 partial
 // take-profit" exit was weak/negative on ETH in backtesting -- only the
@@ -50,8 +58,8 @@ strategy("Waqar Top-Down Pullback Re-Entry (Experimental)",
      process_orders_on_close = true)
 
 // ───────────────────────────── inputs ────────────────────────────────────────
-kExt      = input.int(5, "External range swing width (kExt) — run on 1h", minval = 3, maxval = 12)
-kLeg      = input.int(2, "Pullback-leg swing width (kLeg, finer)", minval = 1, maxval = 6)
+kExt      = input.int(20, "External range swing width (kExt) — run on 15m chart", minval = 5, maxval = 60)
+kLeg      = input.int(3, "Pullback-leg swing width (kLeg, finer)", minval = 1, maxval = 10)
 bufAtr    = input.float(0.3, "Stop buffer beyond touch (x ATR)", step = 0.1)
 riskPct   = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
 maxLev    = input.float(3.0, "Max leverage", step = 0.5)
@@ -213,6 +221,13 @@ if sigShort and strategy.position_size == 0 and not na(extA)
         strategy.exit("Short Stop", "Short", stop = stopLvl)
 
 // ───────────────────────────── visuals ───────────────────────────────────────
+// diagnostic background: pale green/red = dir is active; a brighter stripe
+// = the 2-leg pullback signature has fired and it's watching for the 50%
+// touch. If you NEVER see the brighter stripe, the signature step is what's
+// blocking entries -- try widening kExt relative to kLeg further.
+bgcolor(dir == 1 ? color.new(#1baf7a, 94) : dir == -1 ? color.new(#e34948, 94) : na, title = "dir active")
+bgcolor(waitingEntry ? (dir == 1 ? color.new(#1baf7a, 75) : color.new(#e34948, 75)) : na, title = "signature confirmed, watching for touch")
+
 plot(extA, "External origin (A)", color = color.new(#898781, 30), style = plot.style_stepline)
 plot(extB, "External peak (B)",   color = color.new(#898781, 30), style = plot.style_stepline)
 plot(mid, "50% objective", color = color.new(#eda100, 0), style = plot.style_stepline, linewidth = 2)
