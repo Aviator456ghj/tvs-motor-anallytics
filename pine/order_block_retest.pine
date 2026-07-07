@@ -1,0 +1,243 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Order Block Retest — pure price action, a different mechanism from every
+// other strategy in this repo (not a Fibonacci retracement like CHoCH, not
+// a swing ratchet like Swing Catcher, not FVG/volume like Riley).
+//
+// Idea: when a confirmed swing structure gets broken with a strong,
+// displaced move (a "character change"), the LAST opposite-colour candle
+// right before that impulsive break is the "order block" — the footprint
+// of the orders that caused the move. Price often returns to that exact
+// candle's [low, high] zone once before continuing, and that retest (with
+// a same-direction confirmation candle) is the entry.
+//
+//   1) Structure break: a confirmed LOWER HIGH gets broken upward by a
+//      close (bullish) / a confirmed HIGHER LOW gets broken downward by a
+//      close (bearish) — same swing-pivot logic as every other script here
+//      (swingK-bar fractal, non-repainting).
+//   2) Displacement filter: that breaking close must be >= minBreakATR
+//      ATRs beyond the broken level (a decisive push, not a drift).
+//   3) Order block = the nearest opposite-colour candle in the
+//      `obLookback` bars before the break candle.
+//   4) Wait up to `retestWindow` bars for price to touch the OB zone; a
+//      same-direction candle at that touch confirms entry. A close fully
+//      through the far side of the zone before a confirmation appears
+//      invalidates the setup.
+//   5) Stop: beyond the OB zone's far extreme (+ ATR buffer). Exit: ride
+//      via the same validated swing-trail mechanism used everywhere else
+//      in this repo (trail only tightens, never loosens).
+//
+// ⚠️ HONESTY NOTE (read before using): backtested on 540 days of 1h
+// BTCUSD/ETHUSD. Full period: BTCUSD 85 trades, 22.4% WR, PF 1.75, +23.49%
+// return; ETHUSD 96 trades, 22.9% WR, PF 2.06, +36.17% return — the low
+// win rate is expected for a ride-exit strategy (many small losses, a few
+// large winners carry it), not a bug. Walk-forward split (first 360d /
+// last 180d): stays profitable on BOTH symbols in BOTH halves, but BTC's
+// edge decays a lot in the more recent half (PF 2.03 in -> 1.28 out,
+// return +20.2% -> +2.74%) while ETH holds up strongly (PF ~2.0 in both
+// halves, +22.8%/+8.87%). Largest sample size of any strategy in this
+// repo, but BTC's recent decay means this needs paper trading before any
+// real size — treat as experimental, and watch BTC performance closely.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Order Block Retest (Experimental)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+swingK       = input.int(5,    "Swing fractal half-width (keep at 5 — validated)", minval = 2)
+minBreakATR  = input.float(1.0, "Min displacement on the break (x ATR)", step = 0.1)
+obLookback   = input.int(20,   "Order block search window (bars before break)", minval = 1)
+retestWindow = input.int(120,  "Max wait for retest into OB zone (bars)", minval = 1)
+bufATR       = input.float(0.15, "Stop buffer beyond OB zone (x ATR)", step = 0.05)
+riskPct      = input.float(0.5, "Risk per trade (% equity)", step = 0.1)
+maxLev       = input.float(3.0, "Max leverage", step = 0.5)
+allowLongs   = input.bool(true, "Allow longs")
+allowShorts  = input.bool(true, "Allow shorts")
+
+atr14 = ta.atr(14)
+
+// ───────────────────────── swing structure (non-repainting) ─────────────────
+ph = ta.pivothigh(high, swingK, swingK)
+pl = ta.pivotlow(low, swingK, swingK)
+
+var float lastHigh = na
+var float prevHigh = na
+var float lastLow  = na
+var float prevLow  = na
+
+if not na(ph)
+    prevHigh := lastHigh
+    lastHigh := ph
+if not na(pl)
+    prevLow := lastLow
+    lastLow := pl
+
+lowerHighFormed  = not na(lastHigh) and not na(prevHigh) and lastHigh < prevHigh
+higherLowFormed  = not na(lastLow)  and not na(prevLow)  and lastLow  > prevLow
+
+// ───────────────────────────── setup state ───────────────────────────────────
+var bool  pendingBullOB = false
+var bool  pendingBearOB = false
+var float obLowBull = na
+var float obHighBull = na
+var int   obDeadlineBull = na
+var float obLowBear = na
+var float obHighBear = na
+var int   obDeadlineBear = na
+
+noSetupActive = not pendingBullOB and not pendingBearOB and strategy.position_size == 0
+
+bullBreakNow = allowLongs and noSetupActive and lowerHighFormed and ta.crossover(close, lastHigh) and
+     atr14 > 0 and (close - lastHigh) / atr14 >= minBreakATR
+bearBreakNow = allowShorts and noSetupActive and higherLowFormed and ta.crossunder(close, lastLow) and
+     atr14 > 0 and (lastLow - close) / atr14 >= minBreakATR
+
+// find the nearest opposite-colour candle before the break (the order block)
+findBullOB() =>
+    float obLo = na
+    float obHi = na
+    int obOff = na
+    for i = 1 to obLookback
+        if close[i] < open[i]
+            obLo := low[i]
+            obHi := high[i]
+            obOff := i
+            break
+    [obLo, obHi, obOff]
+
+findBearOB() =>
+    float obLo = na
+    float obHi = na
+    int obOff = na
+    for i = 1 to obLookback
+        if close[i] > open[i]
+            obLo := low[i]
+            obHi := high[i]
+            obOff := i
+            break
+    [obLo, obHi, obOff]
+
+var box obBoxBull = na
+var box obBoxBear = na
+
+if bullBreakNow
+    [obLo, obHi, obOff] = findBullOB()
+    if not na(obLo)
+        pendingBullOB := true
+        obLowBull := obLo
+        obHighBull := obHi
+        obDeadlineBull := bar_index + retestWindow
+        if not na(obBoxBull)
+            box.delete(obBoxBull)
+        obBoxBull := box.new(bar_index - obOff, obHi, bar_index, obLo,
+             border_color = color.new(#1baf7a, 0), bgcolor = color.new(#1baf7a, 85))
+
+if bearBreakNow
+    [obLo, obHi, obOff] = findBearOB()
+    if not na(obLo)
+        pendingBearOB := true
+        obLowBear := obLo
+        obHighBear := obHi
+        obDeadlineBear := bar_index + retestWindow
+        if not na(obBoxBear)
+            box.delete(obBoxBear)
+        obBoxBear := box.new(bar_index - obOff, obHi, bar_index, obLo,
+             border_color = color.new(#e34948, 0), bgcolor = color.new(#e34948, 85))
+
+// ───────────────────────────── retest + entry ────────────────────────────────
+var float entryStopLong  = na
+var float entryStopShort = na
+
+if pendingBullOB
+    if bar_index > obDeadlineBull
+        pendingBullOB := false
+        box.delete(obBoxBull)
+    else
+        touched = low <= obHighBull
+        if touched
+            confirmBull = close > open
+            if confirmBull
+                stopPx = obLowBull - bufATR * atr14
+                stopDist = close - stopPx
+                if stopDist > 0
+                    qtyRisk = strategy.equity * riskPct / 100 / stopDist
+                    qtyCap  = strategy.equity * maxLev / close
+                    entryStopLong := stopPx
+                    strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+                pendingBullOB := false
+                box.delete(obBoxBull)
+            else if close < obLowBull
+                pendingBullOB := false
+                box.delete(obBoxBull)
+
+if pendingBearOB
+    if bar_index > obDeadlineBear
+        pendingBearOB := false
+        box.delete(obBoxBear)
+    else
+        touched = high >= obLowBear
+        if touched
+            confirmBear = close < open
+            if confirmBear
+                stopPx = obHighBear + bufATR * atr14
+                stopDist = stopPx - close
+                if stopDist > 0
+                    qtyRisk = strategy.equity * riskPct / 100 / stopDist
+                    qtyCap  = strategy.equity * maxLev / close
+                    entryStopShort := stopPx
+                    strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+                pendingBearOB := false
+                box.delete(obBoxBear)
+            else if close > obHighBear
+                pendingBearOB := false
+                box.delete(obBoxBear)
+
+// ───────────────────────────── exit management ───────────────────────────────
+var float longTrailStop  = na
+var float shortTrailStop = na
+
+justEnteredLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+justEnteredShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if justEnteredLong
+    longTrailStop := entryStopLong
+if justEnteredShort
+    shortTrailStop := entryStopShort
+
+if strategy.position_size > 0
+    if not na(pl) and pl > longTrailStop
+        longTrailStop := pl
+    strategy.exit("Long Exit", "Long", stop = longTrailStop)
+
+if strategy.position_size < 0
+    if not na(ph) and ph < shortTrailStop
+        shortTrailStop := ph
+    strategy.exit("Short Exit", "Short", stop = shortTrailStop)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(lastHigh, "Last swing high", color = color.new(#e34948, 40), style = plot.style_stepline)
+plot(lastLow,  "Last swing low",  color = color.new(#1baf7a, 40), style = plot.style_stepline)
+
+plotshape(bullBreakNow, "Bullish structure break", shape.triangleup, location.belowbar,
+     color.new(#1baf7a, 0), size = size.tiny)
+plotshape(bearBreakNow, "Bearish structure break", shape.triangledown, location.abovebar,
+     color.new(#e34948, 0), size = size.tiny)
+plot(strategy.position_size > 0 ? longTrailStop : strategy.position_size < 0 ? shortTrailStop : na,
+     "Trail stop", color = color.new(#eda100, 0), style = plot.style_linebr, linewidth = 2)
+
+var table info = table.new(position.top_right, 2, 3, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Setup", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, pendingBullOB ? "waiting: bull OB" : pendingBearOB ? "waiting: bear OB" : "none",
+         text_color = color.new(#eda100, 0), text_size = size.small)
+    table.cell(info, 0, 1, "Position", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 1, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.small)
+    table.cell(info, 0, 2, "Backtest", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 2, "BTC PF1.75/+23% | ETH PF2.06/+36%", text_color = color.gray, text_size = size.tiny)
