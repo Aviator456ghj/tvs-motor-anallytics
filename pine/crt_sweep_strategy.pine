@@ -1,0 +1,282 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// CRT Sweep & Setup -- converted from the pasted "CRT Sweep & Setup
+// Highlighter" INDICATOR into a real STRATEGY (the original only draws
+// boxes/labels and fires alerts -- it never places a trade). Logic is kept
+// 1:1 with the original: same sweep detection, same FVG/MSS setup
+// definitions, same fixed stop (sweep wick) / fixed target (opposite side
+// of the previous HTF candle) -- nothing about the entry conditions is
+// changed from what you pasted.
+//
+// ⚠️ HONESTY NOTE (read before using): backtested in Python on 540 days of
+// 15m BTC/ETH data (htf=60m, the standard CRT setup). AS-IS (minRR=0, the
+// original's own logic, no reward:risk check at all): BTCUSD FVG 732
+// trades/-68% return, ETHUSD FVG 900 trades/-70% return -- badly
+// unprofitable on both symbols, MSS variant even worse (near-0% win rate).
+// Root cause found: the original indicator calls something a "setup" the
+// instant an FVG/MSS appears, with NO check that there's still enough room
+// left to the target to justify the stop distance -- median reward:risk
+// on a real trade was ~0.3 (risking 3x the reward). The `Min Reward:Risk`
+// input below (default 0 = OFF, i.e. exactly the original's behavior) lets
+// you add that missing filter. Even WITH it, results only reach roughly
+// breakeven (BTC -4.4% at minRR=1.0, n=57) -- this strategy has NOT been
+// validated as profitable, even after the fix. Use for research, not size.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("CRT Sweep & Setup (Experimental)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+grp_set = "Settings (original)"
+htf            = input.timeframe("60", "Higher Timeframe", group = grp_set)
+setupType      = input.string("FVG", "Setup Type", options = ["FVG", "MSS", "Both", "None"], group = grp_set)
+drawRR         = input.bool(true, "Draw Risk:Reward", group = grp_set)
+onlyShowWithSetup = input.bool(true, "Only keep visuals if setup found", group = grp_set)
+
+grp_manip = "Manipulation Rules (original)"
+minBreakType   = input.string("Ticks", "Minimum Break Type", options = ["Ticks", "%"], group = grp_manip)
+minBreakValue  = input.float(0.0, "Minimum Break Value", group = grp_manip)
+
+grp_fix = "Added — risk management (OFF = original logic)"
+minRR     = input.float(0.0, "Min Reward:Risk to take the trade (0 = off, original)", step = 0.25, group = grp_fix,
+     tooltip = "The original indicator never checks this -- it calls something a 'setup' even with almost no reward left vs. the stop. Backtested fix: 1.0-1.5 turns a catastrophic loss into roughly breakeven. Still not a validated edge -- see the honesty note above.")
+riskPct   = input.float(0.5, "Risk per trade (% equity)", step = 0.1, group = grp_fix)
+maxLev    = input.float(3.0, "Max leverage", step = 0.5, group = grp_fix)
+allowLongs  = input.bool(true, "Allow longs", group = grp_fix)
+allowShorts = input.bool(true, "Allow shorts", group = grp_fix)
+
+grp_sty = "Style"
+bullColor   = input.color(color.new(#089981, 85), "Bullish Background", group = grp_sty)
+bearColor   = input.color(color.new(#f23645, 85), "Bearish Background", group = grp_sty)
+borderColor = input.color(color.new(color.gray, 0), "Border & Wick Color", group = grp_sty)
+levelColor  = input.color(color.new(color.gray, 0), "Support & Resistance Color", group = grp_sty)
+manipColor  = input.color(color.new(color.orange, 70), "Manipulation Box Color", group = grp_sty)
+labelColor  = input.color(color.orange, "Label Text Color", group = grp_sty)
+rrProfitColor = input.color(color.new(#089981, 80), "RR Profit Color", group = grp_sty)
+rrLossColor   = input.color(color.new(#f23645, 80), "RR Loss Color", group = grp_sty)
+
+// ───────────────────── Manipulation & Setup State Variables ─────────────────
+var int   sweepState = 0
+var float sweepExtremum = na
+var bool  setupFound = false
+
+// ───────────────────────────── HTF tracking ──────────────────────────────────
+htfTime = time(htf)
+isNewHTF = nz(ta.change(htfTime)) != 0
+
+var float htfO = na
+var float htfH = na
+var float htfL = na
+var float htfC = na
+var int   startBar = na
+
+var float prevHtfO = na
+var float prevHtfH = na
+var float prevHtfL = na
+var float prevHtfC = na
+var int   prevStartBar = na
+var int   prevEndBar = na
+
+var box  prevBodyBox = na
+var line prevTopWick = na
+var line prevBtmWick = na
+var line resLine = na
+var line supLine = na
+
+var box   manipBox = na
+var label manipLabel = na
+
+if isNewHTF
+    if onlyShowWithSetup and not setupFound
+        if not na(prevBodyBox)
+            box.delete(prevBodyBox)
+        if not na(prevTopWick)
+            line.delete(prevTopWick)
+        if not na(prevBtmWick)
+            line.delete(prevBtmWick)
+        if not na(resLine)
+            line.delete(resLine)
+        if not na(supLine)
+            line.delete(supLine)
+        if not na(manipBox)
+            box.delete(manipBox)
+        if not na(manipLabel)
+            label.delete(manipLabel)
+
+    sweepState := 0
+    sweepExtremum := na
+    setupFound := false
+    manipBox := na
+    manipLabel := na
+
+    prevHtfO := htfO
+    prevHtfH := htfH
+    prevHtfL := htfL
+    prevHtfC := htfC
+    prevStartBar := startBar
+    prevEndBar := bar_index - 1
+
+    htfO := open
+    htfH := high
+    htfL := low
+    htfC := close
+    startBar := bar_index
+
+    if not na(prevHtfO)
+        prevBodyBox := box.new(prevStartBar, math.max(prevHtfO, prevHtfC), prevEndBar, math.min(prevHtfO, prevHtfC),
+             border_color = borderColor, border_style = line.style_dashed,
+             bgcolor = prevHtfO <= prevHtfC ? bullColor : bearColor)
+
+        int midBar = math.round((prevStartBar + prevEndBar) / 2)
+        prevTopWick := line.new(midBar, prevHtfH, midBar, math.max(prevHtfO, prevHtfC), color = borderColor, style = line.style_dashed)
+        prevBtmWick := line.new(midBar, prevHtfL, midBar, math.min(prevHtfO, prevHtfC), color = borderColor, style = line.style_dashed)
+
+        resLine := line.new(prevEndBar, prevHtfH, bar_index, prevHtfH, color = levelColor, style = line.style_solid)
+        supLine := line.new(prevEndBar, prevHtfL, bar_index, prevHtfL, color = levelColor, style = line.style_solid)
+else if not na(htfO)
+    htfH := math.max(htfH, high)
+    htfL := math.min(htfL, low)
+    htfC := close
+
+    if not na(prevHtfH)
+        line.set_x2(resLine, bar_index)
+        line.set_x2(supLine, bar_index)
+
+// ───────────────────────────── manipulation logic ────────────────────────────
+bool alertBearishSweep = false
+bool alertBullishSweep = false
+
+if not na(prevHtfH)
+    float breakDistBearish = high[1] - prevHtfH
+    float breakDistBullish = prevHtfL - low[1]
+
+    bool validBearishBreak = false
+    bool validBullishBreak = false
+
+    if minBreakType == "Ticks"
+        validBearishBreak := breakDistBearish >= (minBreakValue * syminfo.mintick)
+        validBullishBreak := breakDistBullish >= (minBreakValue * syminfo.mintick)
+    else
+        validBearishBreak := (breakDistBearish / prevHtfH * 100) >= minBreakValue
+        validBullishBreak := (breakDistBullish / prevHtfL * 100) >= minBreakValue
+
+    isBearishSweep = high[1] > prevHtfH and close[1] < prevHtfH and sweepState != 1 and validBearishBreak
+    isBullishSweep = low[1] < prevHtfL and close[1] > prevHtfL and sweepState != -1 and validBullishBreak
+
+    if isBearishSweep
+        sweepState := 1
+        sweepExtremum := high[1]
+        setupFound := false
+        alertBearishSweep := true
+        if not na(manipBox)
+            box.delete(manipBox)
+        if not na(manipLabel)
+            label.delete(manipLabel)
+        manipBox := box.new(bar_index - 2, sweepExtremum, bar_index, prevHtfH, border_color = na, bgcolor = manipColor)
+        manipLabel := label.new(bar_index - 1, sweepExtremum, "Manipulation", style = label.style_label_down,
+             color = color.new(color.white, 100), textcolor = labelColor, size = size.small)
+
+    if isBullishSweep
+        sweepState := -1
+        sweepExtremum := low[1]
+        setupFound := false
+        alertBullishSweep := true
+        if not na(manipBox)
+            box.delete(manipBox)
+        if not na(manipLabel)
+            label.delete(manipLabel)
+        manipBox := box.new(bar_index - 2, prevHtfL, bar_index, sweepExtremum, border_color = na, bgcolor = manipColor)
+        manipLabel := label.new(bar_index - 1, sweepExtremum, "Manipulation", style = label.style_label_up,
+             color = color.new(color.white, 100), textcolor = labelColor, size = size.small)
+
+// ───────────────────────────── setup detection ───────────────────────────────
+bullishFVG = low > high[2] and close[1] > open[1]
+bearishFVG = high < low[2] and close[1] < open[1]
+
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+var float lastPH = na
+var float lastPL = na
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+
+bullishMSS = ta.crossover(close, lastPH)
+bearishMSS = ta.crossunder(close, lastPL)
+
+validBullishSetup = (setupType == "FVG" or setupType == "Both") and bullishFVG or (setupType == "MSS" or setupType == "Both") and bullishMSS
+validBearishSetup = (setupType == "FVG" or setupType == "Both") and bearishFVG or (setupType == "MSS" or setupType == "Both") and bearishMSS
+
+bool alertBullishSetup = false
+bool alertBearishSetup = false
+
+// ───────────────────────────── entries (added) ───────────────────────────────
+if sweepState == -1 and validBullishSetup and not setupFound and setupType != "None" and not na(prevHtfH)
+    setupFound := true
+    alertBullishSetup := true
+    entryPrice = close
+    slPrice = sweepExtremum
+    tpPrice = prevHtfH
+
+    if drawRR and tpPrice > entryPrice and entryPrice > slPrice
+        box.new(bar_index, entryPrice, bar_index + 10, slPrice, border_color = color.new(color.red, 50), bgcolor = rrLossColor)
+        box.new(bar_index, tpPrice, bar_index + 10, entryPrice, border_color = color.new(color.green, 50), bgcolor = rrProfitColor)
+        line.new(bar_index, entryPrice, bar_index + 10, entryPrice, color = color.gray, style = line.style_solid)
+        line.new(bar_index, slPrice, bar_index + 10, slPrice, color = color.red, style = line.style_solid)
+        line.new(bar_index, tpPrice, bar_index + 10, tpPrice, color = color.green, style = line.style_solid)
+
+    if allowLongs and strategy.position_size == 0 and tpPrice > entryPrice and entryPrice > slPrice
+        stopDist = entryPrice - slPrice
+        tgtDist  = tpPrice - entryPrice
+        if stopDist > 0 and tgtDist / stopDist >= minRR
+            qtyRisk = strategy.equity * riskPct / 100 / stopDist
+            qtyCap  = strategy.equity * maxLev / entryPrice
+            strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+            strategy.exit("Long Exit", "Long", stop = slPrice, limit = tpPrice)
+
+if sweepState == 1 and validBearishSetup and not setupFound and setupType != "None" and not na(prevHtfH)
+    setupFound := true
+    alertBearishSetup := true
+    entryPrice = close
+    slPrice = sweepExtremum
+    tpPrice = prevHtfL
+
+    if drawRR and tpPrice < entryPrice and entryPrice < slPrice
+        box.new(bar_index, entryPrice, bar_index + 10, slPrice, border_color = color.new(color.red, 50), bgcolor = rrLossColor)
+        box.new(bar_index, tpPrice, bar_index + 10, entryPrice, border_color = color.new(color.green, 50), bgcolor = rrProfitColor)
+        line.new(bar_index, entryPrice, bar_index + 10, entryPrice, color = color.gray, style = line.style_solid)
+        line.new(bar_index, slPrice, bar_index + 10, slPrice, color = color.red, style = line.style_solid)
+        line.new(bar_index, tpPrice, bar_index + 10, tpPrice, color = color.green, style = line.style_solid)
+
+    if allowShorts and strategy.position_size == 0 and tpPrice < entryPrice and entryPrice < slPrice
+        stopDist = slPrice - entryPrice
+        tgtDist  = entryPrice - tpPrice
+        if stopDist > 0 and tgtDist / stopDist >= minRR
+            qtyRisk = strategy.equity * riskPct / 100 / stopDist
+            qtyCap  = strategy.equity * maxLev / entryPrice
+            strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+            strategy.exit("Short Exit", "Short", stop = slPrice, limit = tpPrice)
+
+// ───────────────────────────── alerts (original) ─────────────────────────────
+alertcondition(alertBearishSweep, title = "Bearish Manipulation", message = "Bearish manipulation detected (Sweep of Previous HTF High).")
+alertcondition(alertBullishSweep, title = "Bullish Manipulation", message = "Bullish manipulation detected (Sweep of Previous HTF Low).")
+alertcondition(alertBearishSetup, title = "Bearish Setup Triggered", message = "Bearish setup triggered after manipulation.")
+alertcondition(alertBullishSetup, title = "Bullish Setup Triggered", message = "Bullish setup triggered after manipulation.")
+
+// ───────────────────────────── dashboard (added) ─────────────────────────────
+var table info = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Sweep state", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, sweepState == 1 ? "bearish (short-side)" : sweepState == -1 ? "bullish (long-side)" : "none",
+         text_color = color.new(#eda100, 0), text_size = size.small)
+    table.cell(info, 0, 1, "Position", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 1, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.small)
