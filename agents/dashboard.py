@@ -69,20 +69,37 @@ def log_file(preset):
     return os.path.join(LOGS, f"{preset}.log")
 
 
+def _pid_alive(pid, preset):
+    """Cross-platform liveness check. NEVER use os.kill(pid, 0) on Windows —
+    there it unconditionally TERMINATES the process instead of probing it."""
+    if os.name == "nt":
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return f'"{pid}"' in out and "python" in out.lower()
+    try:
+        os.kill(pid, 0)  # POSIX: signal 0 = existence probe, raises if dead
+    except OSError:
+        return False
+    try:  # Linux: verify the pid wasn't reused by an unrelated process
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read().decode(errors="replace")
+        return preset in cmd and "run_agent" in cmd
+    except FileNotFoundError:
+        return True  # macOS/BSD: no /proc; alive is the best we can confirm
+
+
 def agent_pid(preset):
-    """Return the live pid for a preset, or None. Guards against pid reuse
-    by checking the process cmdline actually mentions the preset."""
+    """Return the live pid for a preset, or None."""
     try:
         with open(pid_file(preset)) as f:
             pid = int(f.read().strip())
-        os.kill(pid, 0)  # raises if dead
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmd = f.read().decode(errors="replace")
-        if preset in cmd and "run_agent" in cmd:
-            return pid
-    except (OSError, ValueError, FileNotFoundError):
-        pass
-    return None
+    except (OSError, ValueError):
+        return None
+    return pid if _pid_alive(pid, preset) else None
 
 
 def start_agent(preset):
@@ -92,10 +109,16 @@ def start_agent(preset):
     out = open(log_file(preset), "a")
     out.write(f"\n===== dashboard start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
     out.flush()
+    # detach so the agent survives the dashboard being closed
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
+                                   subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        kwargs["start_new_session"] = True
     p = subprocess.Popen(
         [sys.executable, os.path.join(AGENTS_DIR, "run_agent.py"), preset],
-        stdout=out, stderr=subprocess.STDOUT, cwd=REPO,
-        start_new_session=True,  # survives the dashboard being closed
+        stdout=out, stderr=subprocess.STDOUT, cwd=REPO, **kwargs,
     )
     with open(pid_file(preset), "w") as f:
         f.write(str(p.pid))
