@@ -1,0 +1,309 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// CHoCH — Ride Exit (Screenshot Config)
+//
+// The setup: when a trend changes character (CHoCH — a close breaks the
+// last lower-high in a downtrend / higher-low in an uptrend), anchor a
+// swing A->B to that reversal (A = the low that started it, B = the first
+// confirmed swing high after the break). Wait for a pullback into the
+// 0.5-retracement zone with a counter-trend candle, then a confirming
+// candle (optionally a strict full-body engulf) triggers entry. Stop
+// beyond A (+ a buffer, here a FRACTION of the A->B leg, not x ATR — note
+// the units). Exit rides a swing-ratcheted trailing stop until the
+// opposite character change, no fixed take-profit.
+//
+// This file was built on request to match ONE specific Strategy Test
+// Bench console screenshot, not the repo's validated default (which uses
+// a much smaller stop buffer and sane risk sizing — see
+// delta_scalper/config.py's choch_* fields and backtests/run_choch_backtest.py
+// for the validated "limit entry, 2.618 target" variant, which is a
+// DIFFERENT entry mode from this ride-exit script).
+//
+// Screenshot settings: BTCUSD 1h, $1000 start, k=5, stop buffer 0.8x the
+// A->B leg, void level 0.786, min displacement 1x ATR, strict engulf on,
+// 100% risk/trade, 200x leverage cap.
+// Screenshot result: 27 trades, 40.7% win rate, PF 6.93, +18551.92%
+// return, -55.2% MAX DRAWDOWN.
+//
+// ⚠️ HONESTY NOTE: this is the SAME 27-trade sequence as the validated
+// 10%-risk run of this exact setup (buf=0.9x leg, PF 8.56, +206.96%,
+// only -5.3% max drawdown) — same win rate, same trades, just sized ~10x
+// bigger. The +18,551.92% headline is a leverage artifact, not a better
+// edge, and a -55.2% drawdown is a real risk of ruin. Turn riskPct down
+// (e.g. 0.5-2) before running this anywhere real.
+//
+// ⚠️ VERIFICATION NOTE: this Pine port has NOT been run through a Pine
+// compiler in this session (none is available in this environment). The
+// companion Python script,
+// backtests/run_choch_ride_exit_screenshot_backtest.py, IS numerically
+// verified to reproduce the screenshot exactly (27 trades, 40.7% WR,
+// PF 6.93, +18551.92%, -55.2% DD) — treat that script as the source of
+// truth and sanity-check this Pine script's signals against it (or against
+// the Strategy Test Bench console) before trusting it for real capital.
+// Pine also tracks only ONE pending CHoCH setup at a time (same
+// simplification used throughout this repo's other Pine scripts, e.g.
+// order_block_retest.pine) — a second setup forming while the first is
+// still waiting to fill is skipped, which can very occasionally differ
+// from the Python/console engine's independent multi-setup queue.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("CHoCH Ride Exit (Screenshot Config)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+swingK        = input.int(5,    "Swing fractal half-width", minval = 2)
+zoneR         = input.float(0.5, "Entry zone (retracement of A->B)", step = 0.01)
+bufLeg        = input.float(0.8, "Stop buffer (x A->B swing leg) — screenshot value, wide", step = 0.05)
+disrespectR   = input.float(0.786, "Void level (retracement)", step = 0.01)
+minBreakATR   = input.float(1.0, "Min displacement on CHoCH break (x ATR)", step = 0.1)
+waitBars      = input.int(120,  "Setup validity window (bars)", minval = 1)
+requireEngulf = input.bool(true, "Require strict full-body engulf confirmation")
+riskPct       = input.float(100.0, "Risk per trade (% equity) — WARNING: 100% is extremely dangerous, produced -55.2% max DD", step = 1)
+maxLev        = input.float(200.0, "Max leverage (Delta Exchange India BTCUSD default)", step = 1)
+
+atr14 = ta.atr(14)
+
+ph = ta.pivothigh(high, swingK, swingK)
+pl = ta.pivotlow(low, swingK, swingK)
+
+// ───────────────────────── swing structure state ─────────────────────────────
+var float lastH = na
+var float prevH = na
+var int   lastHAt = na
+var int   prevHAt = na
+var float lastL = na
+var float prevL = na
+var int   lastLAt = na
+var int   prevLAt = na
+
+var array<int>   hAtArr = array.new<int>()
+var array<float> hPxArr = array.new<float>()
+var array<int>   lAtArr = array.new<int>()
+var array<float> lPxArr = array.new<float>()
+
+if not na(ph)
+    prevH   := lastH
+    prevHAt := lastHAt
+    lastH   := ph
+    lastHAt := bar_index - swingK
+    array.push(hAtArr, lastHAt)
+    array.push(hPxArr, lastH)
+if not na(pl)
+    prevL   := lastL
+    prevLAt := lastLAt
+    lastL   := pl
+    lastLAt := bar_index - swingK
+    array.push(lAtArr, lastLAt)
+    array.push(lPxArr, lastL)
+
+// ───────────────────────── pending / ready setup state ───────────────────────
+var bool  pendingUp = false
+var bool  pendingDn = false
+var float pendUpA = na
+var int   pendUpABar = na
+var int   pendUpBreakBar = na
+var float pendDnA = na
+var int   pendDnABar = na
+var int   pendDnBreakBar = na
+
+var bool  setupReady = false
+var int   setupDir = na
+var float setupA = na
+var float setupB = na
+var int   setupABar = na
+var int   setupBreakBar = na
+var int   setupReadyBar = na
+
+// finalize: fires the bar a NEW confirmed high/low appears after the break
+if pendingUp and not na(ph) and lastHAt > pendUpBreakBar
+    setupReady     := true
+    setupDir       := 1
+    setupA         := pendUpA
+    setupABar      := pendUpABar
+    setupB         := lastH
+    setupBreakBar  := pendUpBreakBar
+    setupReadyBar  := bar_index
+    pendingUp      := false
+
+if pendingDn and not na(pl) and lastLAt > pendDnBreakBar
+    setupReady     := true
+    setupDir       := -1
+    setupA         := pendDnA
+    setupABar      := pendDnABar
+    setupB         := lastL
+    setupBreakBar  := pendDnBreakBar
+    setupReadyBar  := bar_index
+    pendingDn      := false
+
+// seed: runs every bar, using persistent lastH/lastL (break can happen many bars after confirmation)
+if not na(lastH) and not na(prevH) and not pendingUp and lastH < prevH and close > lastH and bar_index > lastHAt
+    float bestP = na
+    int   bestAt = na
+    cutoff = prevHAt
+    if array.size(lAtArr) > 0
+        for i = array.size(lAtArr) - 1 to 0
+            atI = array.get(lAtArr, i)
+            if atI <= cutoff
+                break
+            pxI = array.get(lPxArr, i)
+            if na(bestP) or pxI < bestP
+                bestP := pxI
+                bestAt := atI
+    if not na(bestP)
+        pendingUp      := true
+        pendUpA        := bestP
+        pendUpABar     := bestAt
+        pendUpBreakBar := bar_index
+
+if not na(lastL) and not na(prevL) and not pendingDn and lastL > prevL and close < lastL and bar_index > lastLAt
+    float bestP = na
+    int   bestAt = na
+    cutoff = prevLAt
+    if array.size(hAtArr) > 0
+        for i = array.size(hAtArr) - 1 to 0
+            atI = array.get(hAtArr, i)
+            if atI <= cutoff
+                break
+            pxI = array.get(hPxArr, i)
+            if na(bestP) or pxI > bestP
+                bestP := pxI
+                bestAt := atI
+    if not na(bestP)
+        pendingDn      := true
+        pendDnA        := bestP
+        pendDnABar     := bestAt
+        pendDnBreakBar := bar_index
+
+// displacement filter, applied once a setup becomes ready (checked at the
+// break bar's close vs B, using the ATR AS OF the break bar — not current
+// ATR). Uses a real `if` (not `?:`, which does not short-circuit in Pine
+// and would try to index [na] on non-setupReady bars) to guard the
+// dynamic historical lookback.
+float atrAtBreak = na
+float closeAtBreak = na
+if setupReady
+    breakBarOffset = bar_index - setupBreakBar
+    atrAtBreak := atr14[breakBarOffset]
+    closeAtBreak := close[breakBarOffset]
+setupDisplaced = setupReady and not na(atrAtBreak) and atrAtBreak > 0 and
+     math.abs(closeAtBreak - setupB) / atrAtBreak >= minBreakATR
+
+// ───────────────────────────── entry window ───────────────────────────────────
+var bool  waitingEntry = false
+var int   entryReadyBar = na
+var int   entryDeadline = na
+var int   entryDir = na
+var float entryA = na
+var float entryB = na
+var float zNear = na
+var float voidLvl = na
+var bool  counterArmed = false
+var float counterOpen = na
+var float counterClose = na
+var float pendingEntryStop = na
+
+if setupReady and setupDisplaced
+    rngNow          = math.abs(setupB - setupA)
+    waitingEntry    := true
+    entryReadyBar   := setupReadyBar
+    entryDeadline   := setupReadyBar + waitBars
+    entryDir        := setupDir
+    entryA          := setupA
+    entryB          := setupB
+    zNear           := setupB - setupDir * zoneR * rngNow
+    voidLvl         := setupB - setupDir * disrespectR * rngNow
+    counterArmed    := false
+setupReady := false   // always clear — displacement fail or not, this setup is consumed
+
+if waitingEntry and bar_index > entryReadyBar
+    voided = (entryDir == 1 ? close > entryB : close < entryB) or
+         (entryDir == 1 ? close < voidLvl : close > voidLvl) or
+         bar_index > entryDeadline
+    if voided
+        waitingEntry := false
+        counterArmed := false
+    else
+        if counterArmed
+            confOk = entryDir == 1 ? close > open : close < open
+            if confOk
+                engulfOk = true
+                if requireEngulf
+                    engulfOk := entryDir == 1 ? (open <= counterClose and close >= counterOpen) :
+                         (open >= counterClose and close <= counterOpen)
+                if engulfOk
+                    stopPx = entryA - entryDir * bufLeg * math.abs(entryB - entryA)
+                    stopDist = math.abs(close - stopPx)
+                    if stopDist > 0
+                        qtyRisk = strategy.equity * riskPct / 100 / stopDist
+                        qtyCap  = strategy.equity * maxLev / close
+                        pendingEntryStop := stopPx
+                        if entryDir == 1
+                            strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+                        else
+                            strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+                    waitingEntry := false
+                    counterArmed := false
+                else
+                    waitingEntry := false   // engulf failed -> void, no retry (matches source engine)
+                    counterArmed := false
+            else
+                counterArmed := false       // confirmation failed -> keep scanning for a new touch
+        if waitingEntry and not counterArmed
+            touchedZone = entryDir == 1 ? low <= zNear : high >= zNear
+            counterCandle = entryDir == 1 ? close < open : close > open
+            if touchedZone and counterCandle
+                counterArmed := true
+                counterOpen  := open
+                counterClose := close
+
+// ───────────────────────────── exit management ───────────────────────────────
+// Two INDEPENDENT exit conditions, matching the verified reference engine
+// exactly (not merged into one ratcheting stop order, unlike the simpler
+// order_block_retest.pine): a fixed hard stop (intrabar wick trigger, set
+// once at entry and never moved) OR a ride-trail exit (a CLOSE below the
+// most recently confirmed opposite swing, once that swing has moved past
+// the original A) — whichever comes first.
+var float hardStopLong  = na
+var float hardStopShort = na
+var float longA  = na
+var float shortA = na
+
+justEnteredLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+justEnteredShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if justEnteredLong
+    hardStopLong := pendingEntryStop
+    longA := entryA
+if justEnteredShort
+    hardStopShort := pendingEntryStop
+    shortA := entryA
+
+if strategy.position_size > 0
+    strategy.exit("Long Stop", "Long", stop = hardStopLong)
+    if not na(lastL) and lastL > longA and close < lastL
+        strategy.close("Long", comment = "Ride exit")
+
+if strategy.position_size < 0
+    strategy.exit("Short Stop", "Short", stop = hardStopShort)
+    if not na(lastH) and lastH < shortA and close > lastH
+        strategy.close("Short", comment = "Ride exit")
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plot(lastH, "Last swing high", color = color.new(#e34948, 40), style = plot.style_stepline)
+plot(lastL, "Last swing low",  color = color.new(#1baf7a, 40), style = plot.style_stepline)
+plot(strategy.position_size > 0 ? hardStopLong : strategy.position_size < 0 ? hardStopShort : na,
+     "Hard stop", color = color.new(#eda100, 0), style = plot.style_linebr, linewidth = 2)
+
+var table info = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Position", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.small)
+    table.cell(info, 0, 1, "Screenshot ref", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 1, "27tr/40.7%WR/PF6.93/+18552%/-55.2%DD", text_color = color.gray, text_size = size.tiny)
