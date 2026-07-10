@@ -21,6 +21,7 @@ from .paper import PaperBroker
 from .risk import RiskManager
 from .choch import ChochFibStrategy
 from .fib import FibRetracementStrategy
+from .order_block import OrderBlockStrategy
 from .riley import RileyReversalStrategy, last_confirmed_swings as riley_last_swings
 from .strategy import TrendPullbackStrategy
 from .structure import MarketStructureStrategy
@@ -33,6 +34,7 @@ STRATEGIES = {
     "fib": FibRetracementStrategy,
     "choch": ChochFibStrategy,
     "riley": RileyReversalStrategy,
+    "orderblock": OrderBlockStrategy,
 }
 
 
@@ -116,7 +118,8 @@ class ScalpingBot:
                  sig.take_profit, decision.notional)
         if self.cfg.strategy == "choch":
             hold_bars = self.cfg.choch_max_hold_bars
-        elif self.cfg.strategy == "riley" and self.cfg.riley_exit_mode == "trail":
+        elif self.cfg.strategy == "orderblock" or (
+                self.cfg.strategy == "riley" and self.cfg.riley_exit_mode == "trail"):
             hold_bars = 2000  # trailing rides run for days; don't time-cut them
         else:
             hold_bars = self.cfg.max_hold_bars
@@ -177,8 +180,9 @@ class ScalpingBot:
                 pnl = self.paper.check_exit(price)
                 if pnl is not None:
                     self.risk.record_trade(pnl)
-                elif pos and self.cfg.strategy == "choch" and \
-                        self.cfg.choch_exit_mode == "trend":
+                elif pos and ((self.cfg.strategy == "choch" and
+                               self.cfg.choch_exit_mode == "trend") or
+                              self.cfg.strategy == "orderblock"):
                     pnl = self._trend_ride_exit(symbol, pos)
                     if pnl is not None:
                         self.risk.record_trade(pnl)
@@ -201,7 +205,8 @@ class ScalpingBot:
             if size != 0:
                 entry_ts = self.last_signal_bar.get(symbol, 0)
                 hold_bars = self.cfg.choch_max_hold_bars \
-                    if self.cfg.strategy == "choch" else self.cfg.max_hold_bars
+                    if self.cfg.strategy in ("choch", "orderblock") \
+                    else self.cfg.max_hold_bars
                 max_hold_s = hold_bars * self.cfg.timeframe_minutes * 60
                 if entry_ts and time.time() - entry_ts > max_hold_s:
                     side = "sell" if size > 0 else "buy"
@@ -220,7 +225,9 @@ class ScalpingBot:
         if self._trail_bar.get(symbol) == newest:
             return None
         self._trail_bar[symbol] = newest
-        lo, hi = last_confirmed_swings(candles, self.cfg.choch_swing_k)
+        trail_k = self.cfg.ob_swing_k if self.cfg.strategy == "orderblock" \
+            else self.cfg.choch_swing_k
+        lo, hi = last_confirmed_swings(candles, trail_k)
         close = float(candles["close"].iloc[-1])
         d = 1 if pos.side == "buy" else -1
         trail = lo if d == 1 else hi
@@ -258,7 +265,7 @@ class ScalpingBot:
         log.info("starting scalping agent [%s] strategy=%s symbols=%s tf=%dm risk/trade=%.2f%%",
                  mode, cfg.strategy, cfg.symbols, cfg.timeframe_minutes,
                  cfg.risk_per_trade * 100)
-        if cfg.strategy in ("structure", "fib", "choch", "riley"):
+        if cfg.strategy in ("structure", "fib", "choch", "riley", "orderblock"):
             log.warning("%s strategy: positive but small-sample backtest — "
                         "validate in paper mode before any live size",
                         cfg.strategy)

@@ -197,6 +197,18 @@ class RileyReversalStrategy:
             stop_d = abs(entry - stop)
             if stop_d <= 0 or stop_d / entry < c.min_move_cost_ratio * c.round_trip_cost:
                 return None
+            if c.riley_use_p2:
+                # Part 2 failure-analysis filter (validated, see
+                # pine/riley_checklist_v2.pine): stale fills and weak-volume
+                # breaks were the two statistically real loss drivers.
+                if fill - rb > c.riley_max_fill_delay:
+                    continue
+                v = df["volume"].values
+                w0v = max(0, bos_bar - 19)
+                vol_avg = float(np.mean(v[w0v:bos_bar + 1]))
+                vol_ratio = v[bos_bar] / vol_avg if vol_avg > 0 else 1.0
+                if vol_ratio < c.riley_min_vol_ratio:
+                    continue
             tp = entry + d * c.riley_r_mult * stop_d \
                 if c.riley_exit_mode == "target" else 0.0
             return Signal(

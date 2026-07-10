@@ -37,6 +37,8 @@ class Config:
     # "riley":               BOS + failed-retest reversal with an FVG
     #                        ("unhealthy move") filter, 15m, swing-trailed
     #                        exit — validated on both BTC and ETH
+    # "orderblock":          displaced structure break -> retest of the
+    #                        order-block candle -> ride exit, 1h
     strategy: str = os.environ.get("DELTA_STRATEGY", "pullback")
 
     # --- strategy (walk-forward selected; see backtests/README section in repo README) ---
@@ -119,6 +121,25 @@ class Config:
     riley_fill_window: int = 12     # bars allowed for the breakout entry to trigger
     riley_exit_mode: str = "trail"  # "trail" (validated best) or "target"
     riley_r_mult: float = 2.0       # take-profit R-multiple if exit_mode="target"
+    # "Part 2" failure-analysis filter (see pine/riley_checklist_v2.pine for
+    # the derivation: both rules found on 321 pooled BTC+ETH v1 trades,
+    # p<0.01, validated to raise PF on both symbols): the entry must fill
+    # within riley_max_fill_delay bars of the failed retest, and the BOS
+    # candle must have volume >= riley_min_vol_ratio x its 20-bar average.
+    riley_use_p2: bool = os.environ.get("DELTA_RILEY_P2", "") == "1"
+    riley_max_fill_delay: int = 3
+    riley_min_vol_ratio: float = 1.3
+
+    # --- order block strategy parameters (DELTA_STRATEGY=orderblock, 1h) ---
+    # Same CHoCH structure detection as the choch strategy, but the entry is
+    # a retest of the "order block" (last opposite-colour candle before the
+    # displaced break) with a confirming candle, not a fib level. Stop
+    # beyond the OB zone + ATR buffer; ride exit via the swing trail. See
+    # pine/order_block_retest.pine for backtest numbers.
+    ob_swing_k: int = 4             # fractal half-width
+    ob_min_break_atr: float = 1.0   # displacement filter on the break candle
+    ob_wait_bars: int = 120         # max bars to wait for the OB retest
+    ob_buf_atr: float = 0.9         # stop buffer beyond the OB zone (x ATR)
 
     # --- position sizing mode ---
     # "risk" (default): risk_per_trade% of equity, sized off the stop distance
@@ -150,7 +171,7 @@ class Config:
         if "DELTA_TIMEFRAME_MIN" not in os.environ:
             if self.strategy in ("structure", "fib"):
                 self.timeframe_minutes = 5
-            elif self.strategy == "choch":
+            elif self.strategy in ("choch", "orderblock"):
                 self.timeframe_minutes = 60
             elif self.strategy == "riley":
                 self.timeframe_minutes = 15
@@ -173,8 +194,17 @@ class Config:
             raise SystemExit(
                 "DELTA_LIVE=1 but DELTA_API_KEY / DELTA_API_SECRET are not set."
             )
-        if self.sizing == "risk" and self.risk_per_trade > 0.02:
-            raise SystemExit("risk_per_trade > 2% is not allowed by this agent.")
+        if self.live and self.sizing == "risk" and self.risk_per_trade > 0.02:
+            # The cap is LIVE-only on purpose: paper mode may replay the
+            # high-risk research presets (agents/run_agent.py) to watch how
+            # they behave in real time, but this agent will never place real
+            # orders sized above 2% risk per trade. The backtested presets
+            # at 15-100% risk produced -55% to -90% max drawdowns — that is
+            # account-ruin territory, not a validated edge.
+            raise SystemExit(
+                "risk_per_trade > 2% is not allowed for LIVE trading by this "
+                "agent (the high-risk presets are paper-only by design)."
+            )
         if self.compound_leverage > 3:
             raise SystemExit("compound_leverage > 3 is not allowed: at full-"
                              "balance staking, higher leverage risks ruin — "
