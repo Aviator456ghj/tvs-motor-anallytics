@@ -15,6 +15,36 @@ python agents/run_agent.py --list      # see all presets
 python agents/run_agent.py btc-choch-100        # paper mode (default)
 ```
 
+## Web interface (dashboard)
+
+```bash
+python agents/dashboard.py --password mysecret
+# then open  http://localhost:8080  in your browser (login box appears)
+```
+
+Start/stop any preset with buttons, watch live paper equity, the open
+position, the trade journal, per-agent logs, and an embedded TradingView
+chart — all in one page. Agents started from the dashboard keep running
+even if you close the browser or stop the dashboard itself.
+
+To open it from your phone on the same Wi-Fi:
+
+```bash
+python agents/dashboard.py --host 0.0.0.0 --password mysecret
+# phone browser -> http://<your-pc's-LAN-IP>:8080
+```
+
+(The dashboard refuses to bind beyond localhost without a password. Never
+port-forward it to the open internet.)
+
+**Why there's no TradingView login:** the agent deliberately does not log
+into TradingView. A login adds zero trading capability — TradingView has
+no public order API, and Delta Exchange India is not a TradingView
+broker — and automating their login violates their terms and breaks at
+the first captcha/2FA. The chart in the dashboard is TradingView's
+official free embed (view-only, no account needed); execution happens
+directly on Delta Exchange.
+
 Keep it running after you close the terminal (Linux / Mac / Termux):
 
 ```bash
