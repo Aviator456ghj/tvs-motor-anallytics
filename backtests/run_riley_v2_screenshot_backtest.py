@@ -159,7 +159,10 @@ def run(df, k, fvg_mult, retest_window, fill_window, eq0, risk_pct, leverage,
         pnl = notional * ret
         equity = max(0.0, equity + pnl)
         trades.append({"dir": d, "entry_bar": fill, "exit_bar": exit_j,
-                        "lots": lots, "pnl": pnl, "equity": equity})
+                        "lots": lots, "pnl": pnl, "equity": equity,
+                        # per-unit-notional return and stop distance, so
+                        # R-multiples (Kelly math) are exact: R = ret/stop
+                        "ret_frac": ret, "stop_frac": stop_d / entry})
         used_until = exit_j + 1
         t = exit_j + 1
     return pd.DataFrame(trades)

@@ -123,7 +123,11 @@ def run(df, k, zone, buf, disrespect_r, min_break_atr, wait, eq0, risk_pct,
             pnl_tot = notional * (d * (c[exit_j] - entry) / entry - cost)
         equity = max(0.0, equity + pnl_tot)
         trades.append({"dir": d, "entry_bar": fill, "exit_bar": exit_j,
-                        "lots": lots, "pnl": pnl_tot, "equity": equity})
+                        "lots": lots, "pnl": pnl_tot, "equity": equity,
+                        # per-unit-notional return and stop distance, so
+                        # R-multiples (Kelly math) are exact: R = ret/stop
+                        "ret_frac": pnl_tot / notional if notional > 0 else 0.0,
+                        "stop_frac": stop_d / entry})
         used_until = exit_j + 1
     return pd.DataFrame(trades)
 
