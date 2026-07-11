@@ -39,6 +39,9 @@ class Config:
     #                        exit — validated on both BTC and ETH
     # "orderblock":          displaced structure break -> retest of the
     #                        order-block candle -> ride exit, 1h
+    # "liqfakeout":          liquidity sweep + same-candle fakeout reversal,
+    #                        volume-confirmed, fixed 1R target, 1h ONLY —
+    #                        validated cross-asset on BTC/ETH/SOL/XRP
     strategy: str = os.environ.get("DELTA_STRATEGY", "pullback")
 
     # --- strategy (walk-forward selected; see backtests/README section in repo README) ---
@@ -141,6 +144,24 @@ class Config:
     ob_wait_bars: int = 120         # max bars to wait for the OB retest
     ob_buf_atr: float = 0.9         # stop buffer beyond the OB zone (x ATR)
 
+    # --- liquidity fakeout strategy (DELTA_STRATEGY=liqfakeout, 1h ONLY) ---
+    # a confirmed k-bar swing is where resting stop-loss/breakout liquidity
+    # clusters; a SWEEP pierces >= liq_wick_atr ATRs beyond it; a FAKEOUT is
+    # the sweeping candle itself failing to hold beyond the level (closes
+    # back inside) -- traded only when that candle's volume is
+    # >= liq_vol_mult x its 20-bar average (the filter that separates a
+    # real stop-hunt from a random wick: PF 0.85 without it, 1.06-1.90
+    # with it, walk-forward, across BTC/ETH/SOL/XRP). Exit: fixed R target,
+    # not a ride -- a fakeout is a quick snap-back, not a trend.
+    # VALIDATED ON 1H ONLY: fails on 15m (PF 0.63-0.99), marginal on 30m
+    # (PF 0.81-1.14). Do not run this strategy at any other timeframe.
+    liq_swing_k: int = 3
+    liq_wick_atr: float = 0.1        # min sweep depth beyond the level (x ATR)
+    liq_reject_frac: float = 0.0     # how far back inside the level the close must reach
+    liq_vol_mult: float = 1.5        # min sweep-candle volume (x 20-bar avg)
+    liq_r_mult: float = 1.0          # fixed take-profit, in R
+    liq_buf_atr: float = 0.15        # stop buffer beyond the sweep extreme (x ATR)
+
     # --- position sizing mode ---
     # "risk" (default): risk_per_trade% of equity, sized off the stop distance
     # "compound":       stake the FULL balance x compound_leverage every trade
@@ -171,7 +192,7 @@ class Config:
         if "DELTA_TIMEFRAME_MIN" not in os.environ:
             if self.strategy in ("structure", "fib"):
                 self.timeframe_minutes = 5
-            elif self.strategy in ("choch", "orderblock"):
+            elif self.strategy in ("choch", "orderblock", "liqfakeout"):
                 self.timeframe_minutes = 60
             elif self.strategy == "riley":
                 self.timeframe_minutes = 15

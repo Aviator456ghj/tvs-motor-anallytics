@@ -90,6 +90,43 @@ PRESETS = {
         riley_use_p2=True, riley_max_fill_delay=3, riley_min_vol_ratio=1.3,
         risk_per_trade=0.26, max_leverage=200,
     ),
+    # ── Liquidity Sweep Fakeout — genuinely validated, sane risk ──────────
+    # unlike the five presets above (screenshot-config replays at
+    # deliberately extreme risk, paper-only), these four run at 1% risk —
+    # low enough to pass the live-mode safety cap unmodified. Built from
+    # scratch on request, searched exhaustively (see
+    # reports/liquidity_fakeout_report.md): plain sweep+fakeout+ride-exit
+    # lost money in all 216 combinations tried; volume-confirming the
+    # sweep + a fixed 1R target turned it real. Validated walk-forward,
+    # 1h only, on all four assets below.
+    "btc-liqfakeout": dict(
+        _desc="Liquidity Sweep Fakeout, BTCUSD 1h — k=3, volume>=1.5x, fixed 1R, 1% risk. "
+              "Walk-forward: PF 1.06 in -> 1.42 out-of-sample.",
+        symbols=("BTCUSD",), strategy="liqfakeout", timeframe_minutes=60,
+        liq_swing_k=3, liq_wick_atr=0.1, liq_reject_frac=0.0, liq_vol_mult=1.5,
+        liq_r_mult=1.0, liq_buf_atr=0.15, risk_per_trade=0.01, max_leverage=10,
+    ),
+    "eth-liqfakeout": dict(
+        _desc="Liquidity Sweep Fakeout, ETHUSD 1h — same config, 1% risk. "
+              "Walk-forward: PF 1.26 in -> 1.49 out-of-sample.",
+        symbols=("ETHUSD",), strategy="liqfakeout", timeframe_minutes=60,
+        liq_swing_k=3, liq_wick_atr=0.1, liq_reject_frac=0.0, liq_vol_mult=1.5,
+        liq_r_mult=1.0, liq_buf_atr=0.15, risk_per_trade=0.01, max_leverage=10,
+    ),
+    "sol-liqfakeout": dict(
+        _desc="Liquidity Sweep Fakeout, SOLUSD 1h — same config, 1% risk. "
+              "Walk-forward: PF 1.90 in -> 1.57 out-of-sample (strongest of the four).",
+        symbols=("SOLUSD",), strategy="liqfakeout", timeframe_minutes=60,
+        liq_swing_k=3, liq_wick_atr=0.1, liq_reject_frac=0.0, liq_vol_mult=1.5,
+        liq_r_mult=1.0, liq_buf_atr=0.15, risk_per_trade=0.01, max_leverage=10,
+    ),
+    "xrp-liqfakeout": dict(
+        _desc="Liquidity Sweep Fakeout, XRPUSD 1h — same config, 1% risk. "
+              "Walk-forward: PF 1.16 in -> 1.43 out-of-sample.",
+        symbols=("XRPUSD",), strategy="liqfakeout", timeframe_minutes=60,
+        liq_swing_k=3, liq_wick_atr=0.1, liq_reject_frac=0.0, liq_vol_mult=1.5,
+        liq_r_mult=1.0, liq_buf_atr=0.15, risk_per_trade=0.01, max_leverage=10,
+    ),
     # NOTE: the ETH "Swing Catcher k=8, stop buffer 0.0001xATR, 15% risk"
     # screenshot is deliberately NOT a preset. A 0.0001xATR buffer puts the
     # stop essentially AT the swing price, which makes the risk-based sizing

@@ -89,7 +89,7 @@ def print_report(label: str, st: dict):
 
 def fetch_candles(client, symbol: str, timeframe: str, days: int) -> pd.DataFrame:
     import time
-    bar_seconds = {"15m": 900, "1h": 3600}[timeframe]
+    bar_seconds = {"15m": 900, "30m": 1800, "1h": 3600}[timeframe]
     end = int(time.time())
     start = end - days * 86400
     frames, cursor = [], end

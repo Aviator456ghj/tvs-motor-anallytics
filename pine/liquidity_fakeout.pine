@@ -1,0 +1,181 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Liquidity Sweep Fakeout — built from scratch, iterated to find the most
+// robust version, tested exhaustively (see backtests/run_liquidity_fakeout_
+// backtest.py and reports/liquidity_fakeout_report.md for the full search).
+//
+// Idea: a confirmed k-bar swing high/low is where resting liquidity (stop
+// losses, breakout entries) clusters. A SWEEP is a wick that pierces
+// >= wickAtr ATRs beyond that level — an attempt to trigger those resting
+// orders. A FAKEOUT is the sweeping candle itself failing to hold beyond
+// the level: it closes back inside (governed by rejectFrac — 0 means "any
+// close back across the level counts"). This is traded ONLY when that
+// candle's volume is >= volMult x its 20-bar average — the filter that
+// turns a random wick into a real stop-hunt signal. Entry: market, on the
+// sweep candle's own close (no waiting window — same-candle confirm).
+// Stop: beyond the sweep's extreme + an ATR buffer. Exit: a FIXED
+// R-multiple target — a fakeout is a quick snap-back, not a trend, and
+// ride-style exits LOST MONEY in every configuration tested for this
+// specific pattern (unlike CHoCH/Order Block in this repo, where riding
+// is what works).
+//
+// ⚠️ HONESTY NOTE: an exhaustive search (216+ parameter combos, walk-
+// forward 70/30, four assets, three timeframes) found this pattern has
+// NO edge at all without the volume filter and fixed-R exit (best cell
+// PF 0.85, every combination tested lost money) and STILL fails outright
+// on 15m (PF 0.63-0.99) and is marginal on 30m (PF 0.81-1.14) even with
+// the fix. It only validates on the 1H timeframe. There — walk-forward,
+// unchanged parameters, across BTC/ETH/SOL/XRP:
+//   BTCUSD  PF 1.06 in-sample -> 1.42 out-of-sample  (247 trades total)
+//   ETHUSD  PF 1.26 -> 1.49  (329 trades total)
+//   SOLUSD  PF 1.90 -> 1.57  (333 trades total)
+//   XRPUSD  PF 1.16 -> 1.43  (245 trades total)
+// Out-of-sample PF meeting or beating in-sample PF on 3 of 4 assets is an
+// unusually good sign (curve-fit edges normally decay, not improve) — but
+// this is still one validated window, not a guarantee. USE THE 1H CHART
+// ONLY. Set the timeframe to anything else and these numbers do not apply.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Liquidity Sweep Fakeout (1h only)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.035,
+     slippage = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ───────────────────────────── inputs ────────────────────────────────────────
+swingK      = input.int(3,    "Swing fractal half-width", minval = 2)
+wickAtr     = input.float(0.1, "Min sweep depth beyond level (x ATR)", step = 0.05)
+rejectFrac  = input.float(0.0, "Reject depth back inside level (0 = any close-back)", step = 0.05, minval = 0)
+volMult     = input.float(1.5, "Min sweep-candle volume (x 20-bar avg)", step = 0.1)
+rMult       = input.float(1.0, "Take-profit (R multiple)", step = 0.1)
+bufAtr      = input.float(0.15, "Stop buffer beyond sweep extreme (x ATR)", step = 0.05)
+riskPct     = input.float(1.0, "Risk per trade (% equity)", step = 0.1)
+maxLev      = input.float(200.0, "Max leverage (Delta Exchange India BTCUSD default)", step = 1)
+allowLongs  = input.bool(true, "Allow longs")
+allowShorts = input.bool(true, "Allow shorts")
+
+if timeframe.in_seconds() != 3600
+    var table warn = table.new(position.middle_center, 1, 1, bgcolor = color.new(#e34948, 0))
+    if barstate.islast
+        table.cell(warn, 0, 0, "⚠ VALIDATED ON 1H ONLY — this timeframe is untested/unvalidated",
+             text_color = color.white, text_size = size.normal)
+
+atr14 = ta.atr(14)
+volSma20 = ta.sma(volume, 20)
+
+ph = ta.pivothigh(high, swingK, swingK)
+pl = ta.pivotlow(low, swingK, swingK)
+
+// ───────────────────────── live (unswept) liquidity levels ───────────────────
+// Parallel arrays: price + swept flag. A level is removed once swept —
+// only ONE sweep per level is meaningful (Chain-Sweep, elsewhere in this
+// repo, is the strategy that specifically cares about repeat sweeps).
+var array<float> hiLevels = array.new<float>()
+var array<bool>  hiSwept  = array.new<bool>()
+var array<float> loLevels = array.new<float>()
+var array<bool>  loSwept  = array.new<bool>()
+
+if not na(ph)
+    array.push(hiLevels, ph)
+    array.push(hiSwept, false)
+if not na(pl)
+    array.push(loLevels, pl)
+    array.push(loSwept, false)
+
+// prune fully-consumed levels occasionally so the arrays don't grow forever
+if bar_index % 500 == 0
+    for i = array.size(hiSwept) - 1 to 0
+        if array.get(hiSwept, i)
+            array.remove(hiLevels, i)
+            array.remove(hiSwept, i)
+    for i = array.size(loSwept) - 1 to 0
+        if array.get(loSwept, i)
+            array.remove(loLevels, i)
+            array.remove(loSwept, i)
+
+// ───────────────────────────── entry ─────────────────────────────────────────
+noPosition = strategy.position_size == 0
+volOk = volSma20 > 0 and volume >= volMult * volSma20
+
+var float pendingStop = na
+var float pendingTp   = na
+
+if noPosition and volOk and atr14 > 0
+    // short side: sweep of a live high, same-candle fakeout close
+    if allowShorts
+        for i = 0 to array.size(hiLevels) - 1
+            if not array.get(hiSwept, i)
+                level = array.get(hiLevels, i)
+                if high >= level + wickAtr * atr14
+                    array.set(hiSwept, i, true)
+                    thresh = level - rejectFrac * (high - level)
+                    if close <= thresh and noPosition
+                        stopPx = high + bufAtr * atr14
+                        stopDist = stopPx - close
+                        if stopDist > 0
+                            tp = close - stopDist * rMult
+                            qtyRisk = strategy.equity * riskPct / 100 / stopDist
+                            qtyCap  = strategy.equity * maxLev / close
+                            pendingStop := stopPx
+                            pendingTp   := tp
+                            strategy.entry("Short", strategy.short, qty = math.min(qtyRisk, qtyCap))
+    // long side: sweep of a live low, same-candle fakeout close
+    if allowLongs and noPosition
+        for i = 0 to array.size(loLevels) - 1
+            if not array.get(loSwept, i)
+                level = array.get(loLevels, i)
+                if low <= level - wickAtr * atr14
+                    array.set(loSwept, i, true)
+                    thresh = level + rejectFrac * (level - low)
+                    if close >= thresh and noPosition
+                        stopPx = low - bufAtr * atr14
+                        stopDist = close - stopPx
+                        if stopDist > 0
+                            tp = close + stopDist * rMult
+                            qtyRisk = strategy.equity * riskPct / 100 / stopDist
+                            qtyCap  = strategy.equity * maxLev / close
+                            pendingStop := stopPx
+                            pendingTp   := tp
+                            strategy.entry("Long", strategy.long, qty = math.min(qtyRisk, qtyCap))
+
+// ───────────────────────────── exit management ───────────────────────────────
+var float longStop = na
+var float longTp   = na
+var float shortStop = na
+var float shortTp   = na
+
+justEnteredLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+justEnteredShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if justEnteredLong
+    longStop := pendingStop
+    longTp   := pendingTp
+if justEnteredShort
+    shortStop := pendingStop
+    shortTp   := pendingTp
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long", stop = longStop, limit = longTp)
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short", stop = shortStop, limit = shortTp)
+
+// ───────────────────────────── visuals ───────────────────────────────────────
+plotshape(strategy.position_size[1] == 0 and strategy.position_size > 0, "Long entry",
+     shape.triangleup, location.belowbar, color.new(#1baf7a, 0), size = size.tiny)
+plotshape(strategy.position_size[1] == 0 and strategy.position_size < 0, "Short entry",
+     shape.triangledown, location.abovebar, color.new(#e34948, 0), size = size.tiny)
+plot(strategy.position_size > 0 ? longStop : strategy.position_size < 0 ? shortStop : na,
+     "Stop", color = color.new(#eda100, 0), style = plot.style_linebr, linewidth = 2)
+plot(strategy.position_size > 0 ? longTp : strategy.position_size < 0 ? shortTp : na,
+     "Target", color = color.new(#1baf7a, 0), style = plot.style_linebr, linewidth = 2)
+
+var table info = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 65), border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Position", text_color = color.white, text_size = size.small)
+    table.cell(info, 1, 0, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color = strategy.position_size > 0 ? color.new(#1baf7a,0) : strategy.position_size < 0 ? color.new(#e34948,0) : color.gray, text_size = size.small)
+    table.cell(info, 0, 1, "Validated", text_color = color.white, text_size = size.tiny)
+    table.cell(info, 1, 1, "1h only: BTC/ETH/SOL/XRP", text_color = color.gray, text_size = size.tiny)

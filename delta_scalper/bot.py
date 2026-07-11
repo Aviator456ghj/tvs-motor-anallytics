@@ -22,6 +22,7 @@ from .risk import RiskManager
 from .choch import ChochFibStrategy
 from .fib import FibRetracementStrategy
 from .order_block import OrderBlockStrategy
+from .liquidity_fakeout import LiquidityFakeoutStrategy
 from .riley import RileyReversalStrategy, last_confirmed_swings as riley_last_swings
 from .strategy import TrendPullbackStrategy
 from .structure import MarketStructureStrategy
@@ -35,6 +36,7 @@ STRATEGIES = {
     "choch": ChochFibStrategy,
     "riley": RileyReversalStrategy,
     "orderblock": OrderBlockStrategy,
+    "liqfakeout": LiquidityFakeoutStrategy,
 }
 
 
@@ -265,7 +267,7 @@ class ScalpingBot:
         log.info("starting scalping agent [%s] strategy=%s symbols=%s tf=%dm risk/trade=%.2f%%",
                  mode, cfg.strategy, cfg.symbols, cfg.timeframe_minutes,
                  cfg.risk_per_trade * 100)
-        if cfg.strategy in ("structure", "fib", "choch", "riley", "orderblock"):
+        if cfg.strategy in ("structure", "fib", "choch", "riley", "orderblock", "liqfakeout"):
             log.warning("%s strategy: positive but small-sample backtest — "
                         "validate in paper mode before any live size",
                         cfg.strategy)
