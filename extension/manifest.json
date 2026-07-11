@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Delta Pattern Agent — TradingView Sidebar",
+  "version": "1.0.0",
+  "description": "Slide-in sidebar on tradingview.com showing live signals, positions and paper equity from your local agent dashboard (localhost:8080).",
+  "permissions": [],
+  "host_permissions": ["http://localhost:8080/*", "http://127.0.0.1:8080/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://*.tradingview.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
