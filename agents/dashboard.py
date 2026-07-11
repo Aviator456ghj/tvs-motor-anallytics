@@ -5,51 +5,57 @@ Start it:
     python agents/dashboard.py                              # http://localhost:8080
     python agents/dashboard.py --password mysecret          # require a login
     python agents/dashboard.py --host 0.0.0.0 --password s3 # reachable on your LAN
-                                                            # (phone browser etc.)
 
 What you get in the browser:
-  - start/stop buttons for every preset (each runs as its own background
-    process that keeps running even if you close the dashboard)
+  - start/stop buttons for every preset (scalper presets AND the new
+    pattern presets from the July 2026 backtest study)
   - live paper equity, open position, and trade count per preset
   - the shared trade journal, filtered per preset
   - live log tail per preset
-  - an embedded TradingView chart (TradingView's free public widget — no
-    TradingView account or login needed; it's view-only market data)
+  - an embedded TradingView chart (free public widget, view-only)
+  - a "Broker: Delta Exchange" panel — save API key/secret, test the
+    connection, and see your live wallet balance
 
 About TradingView logins: the agent does NOT log into TradingView, on
-purpose. A TradingView login adds no trading ability (TradingView has no
-public order API — orders execute at a broker, and Delta Exchange India is
-not a TradingView broker), and automating a login against their site
-violates their terms of service and breaks at the first captcha. The chart
-below is TradingView's official free embed; execution happens directly on
-Delta Exchange via the agent processes.
+purpose. TradingView has no public order API — orders execute at Delta
+Exchange. For an in-TradingView view of these agents, load the Chrome
+extension in extension/ — it slides a signals sidebar into tradingview.com
+that reads this dashboard's API.
 
-Security note: with --password, access requires HTTP Basic auth (the
-browser shows a login box). Only expose beyond localhost (--host 0.0.0.0)
-on a network you trust — this is a hobby dashboard, not a hardened web
-app. Never port-forward it to the open internet.
+Security: with --password, access requires HTTP Basic auth. API keys are
+stored in agents/.delta_keys.json (chmod 600) and never sent to any host
+except api.india.delta.exchange. Never port-forward this to the internet.
 """
 import argparse
 import base64
 import csv
+import hashlib
+import hmac
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 AGENTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(AGENTS_DIR)
 LOGS = os.path.join(AGENTS_DIR, "logs")
+KEYS_FILE = os.path.join(AGENTS_DIR, ".delta_keys.json")
+DELTA_BASE = "https://api.india.delta.exchange"
 sys.path.insert(0, AGENTS_DIR)
 sys.path.insert(0, REPO)
 
-from run_agent import PRESETS  # noqa: E402
+from run_agent import PRESETS as SCALPER_PRESETS      # noqa: E402
+from pattern_agent import PRESETS as PATTERN_PRESETS  # noqa: E402
 
-# preset -> (strategy, symbol) for journal filtering / chart symbol
+PRESETS = {**SCALPER_PRESETS, **PATTERN_PRESETS}
+RUNNER = {name: "run_agent.py" for name in SCALPER_PRESETS}
+RUNNER.update({name: "pattern_agent.py" for name in PATTERN_PRESETS})
+
 PRESET_META = {
     name: {"strategy": p["strategy"], "symbol": p["symbols"][0]}
     for name, p in PRESETS.items()
@@ -70,8 +76,7 @@ def log_file(preset):
 
 
 def _pid_alive(pid, preset):
-    """Cross-platform liveness check. NEVER use os.kill(pid, 0) on Windows —
-    there it unconditionally TERMINATES the process instead of probing it."""
+    """Cross-platform liveness check. NEVER os.kill(pid,0) on Windows."""
     if os.name == "nt":
         try:
             out = subprocess.run(
@@ -81,19 +86,18 @@ def _pid_alive(pid, preset):
             return False
         return f'"{pid}"' in out and "python" in out.lower()
     try:
-        os.kill(pid, 0)  # POSIX: signal 0 = existence probe, raises if dead
+        os.kill(pid, 0)
     except OSError:
         return False
-    try:  # Linux: verify the pid wasn't reused by an unrelated process
+    try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             cmd = f.read().decode(errors="replace")
-        return preset in cmd and "run_agent" in cmd
+        return preset in cmd and ("run_agent" in cmd or "pattern_agent" in cmd)
     except FileNotFoundError:
-        return True  # macOS/BSD: no /proc; alive is the best we can confirm
+        return True
 
 
 def agent_pid(preset):
-    """Return the live pid for a preset, or None."""
     try:
         with open(pid_file(preset)) as f:
             pid = int(f.read().strip())
@@ -109,7 +113,6 @@ def start_agent(preset):
     out = open(log_file(preset), "a")
     out.write(f"\n===== dashboard start {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
     out.flush()
-    # detach so the agent survives the dashboard being closed
     kwargs = {}
     if os.name == "nt":
         kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
@@ -117,7 +120,7 @@ def start_agent(preset):
     else:
         kwargs["start_new_session"] = True
     p = subprocess.Popen(
-        [sys.executable, os.path.join(AGENTS_DIR, "run_agent.py"), preset],
+        [sys.executable, os.path.join(AGENTS_DIR, RUNNER[preset]), preset],
         stdout=out, stderr=subprocess.STDOUT, cwd=REPO, **kwargs,
     )
     with open(pid_file(preset), "w") as f:
@@ -137,10 +140,74 @@ def stop_agent(preset):
     return {"ok": True}
 
 
+# ───────────────────────── broker: Delta Exchange ─────────────────────────
+
+def load_keys():
+    try:
+        with open(KEYS_FILE) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_keys(api_key, api_secret):
+    with open(KEYS_FILE, "w") as f:
+        json.dump({"api_key": api_key, "api_secret": api_secret}, f)
+    try:
+        os.chmod(KEYS_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def delta_signed_get(path, query=""):
+    """Signed GET against Delta Exchange India.
+    signature = hex(HMAC_SHA256(secret, method + timestamp + path + query + body))"""
+    keys = load_keys()
+    if not keys.get("api_key"):
+        return {"error": "no keys saved"}
+    ts = str(int(time.time()))
+    msg = "GET" + ts + path + (("?" + query) if query else "") + ""
+    sig = hmac.new(keys["api_secret"].encode(), msg.encode(), hashlib.sha256).hexdigest()
+    url = DELTA_BASE + path + (("?" + query) if query else "")
+    req = urllib.request.Request(url, headers={
+        "api-key": keys["api_key"], "timestamp": ts, "signature": sig,
+        "User-Agent": "agent-dashboard/1.0", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return {"error": f"HTTP {e.code}", "detail": json.loads(e.read().decode())}
+        except Exception:
+            return {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def broker_status():
+    keys = load_keys()
+    out = {"connected": False, "keys_saved": bool(keys.get("api_key")),
+           "key_hint": (keys.get("api_key", "")[:6] + "…") if keys.get("api_key") else None}
+    if not out["keys_saved"]:
+        return out
+    res = delta_signed_get("/v2/wallet/balances")
+    if isinstance(res, dict) and res.get("success"):
+        bals = [{"asset": b.get("asset_symbol"),
+                 "balance": b.get("balance"),
+                 "available": b.get("available_balance")}
+                for b in res.get("result", [])
+                if float(b.get("balance", 0) or 0) != 0]
+        out["connected"] = True
+        out["balances"] = bals or [{"asset": "—", "balance": "0", "available": "0"}]
+    else:
+        out["error"] = res.get("error") or "authentication failed"
+        out["detail"] = res.get("detail")
+    return out
+
+
 # ───────────────────────── data readers ─────────────────────────
 
 def paper_state(preset):
-    """Equity / open position from the preset's paper-broker state file."""
     path = os.path.join(REPO, f"scalper_state_{preset}_paper.json")
     if not os.path.exists(path):
         return None
@@ -183,10 +250,30 @@ def log_tail(preset, lines=60):
     return "\n".join(text.splitlines()[-lines:])
 
 
+def signals_summary():
+    """Compact status for the TradingView sidebar extension."""
+    out = []
+    for name in PRESETS:
+        st = paper_state(name)
+        pos = st.get("position") if st else None
+        out.append({
+            "preset": name, "symbol": PRESET_META[name]["symbol"],
+            "strategy": PRESET_META[name]["strategy"],
+            "running": agent_pid(name) is not None,
+            "equity": st["equity"] if st else None,
+            "closed_trades": st["closed_trades"] if st else 0,
+            "position": ({"side": pos.get("side"), "entry": pos.get("entry_price"),
+                          "stop": pos.get("stop"), "target": pos.get("target"),
+                          "pattern": pos.get("pattern"), "confirm": pos.get("confirm")}
+                         if pos else None),
+        })
+    return out
+
+
 # ───────────────────────── http server ─────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AgentDash/1.0"
+    server_version = "AgentDash/2.0"
 
     def _authed(self):
         if PASSWORD is None:
@@ -207,11 +294,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"login required")
 
+    def _cors(self):
+        # lets the TradingView sidebar extension (content script on
+        # tradingview.com) read the API on localhost
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization,Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+
     def _json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
@@ -223,8 +318,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, fmt, *args):  # quieter console
+    def log_message(self, fmt, *args):
         pass
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
 
     def do_GET(self):
         if not self._authed():
@@ -245,6 +345,10 @@ class Handler(BaseHTTPRequestHandler):
                     "tv": TV_SYMBOL.get(PRESET_META[name]["symbol"], "BINANCE:BTCUSDT"),
                 }
             return self._json(out)
+        if u.path == "/api/signals":
+            return self._json(signals_summary())
+        if u.path == "/api/broker":
+            return self._json(broker_status())
         if u.path == "/api/journal" and preset in PRESETS:
             return self._json(journal_rows(preset))
         if u.path == "/api/log" and preset in PRESETS:
@@ -256,6 +360,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._deny()
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path == "/api/broker/save":
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                d = json.loads(self.rfile.read(n).decode())
+                key, sec = d.get("api_key", "").strip(), d.get("api_secret", "").strip()
+                if not key or not sec:
+                    return self._json({"ok": False, "error": "key and secret required"}, 400)
+                save_keys(key, sec)
+                return self._json({"ok": True, **broker_status()})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, 400)
+        if u.path == "/api/broker/forget":
+            try:
+                os.remove(KEYS_FILE)
+            except OSError:
+                pass
+            return self._json({"ok": True})
         preset = (q.get("preset") or [None])[0]
         if preset not in PRESETS:
             return self._json({"error": "unknown preset"}, 400)
@@ -296,20 +417,46 @@ td{padding:4px 8px;border-bottom:1px solid #21262d;font-variant-numeric:tabular-
 .pos{color:var(--up)} .neg{color:var(--dn)}
 pre{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:11px;overflow-x:auto;white-space:pre-wrap;max-height:280px;overflow-y:auto;color:#9da7b3}
 #tvwrap{height:440px;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
-select{background:#21262d;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+select,input{background:#21262d;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+input{width:100%;margin:4px 0;font-size:12.5px}
 .flex{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-@media(max-width:640px){#tvwrap{height:320px}}
+.badge{font-size:11px;border-radius:5px;padding:2px 7px;font-weight:600}
+.bok{background:#12351f;color:var(--up)} .bno{background:#3a1416;color:var(--dn)}
+.brokergrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){#tvwrap{height:320px}.brokergrid{grid-template-columns:1fr}}
 </style></head><body>
 <h1>Trading Agent Dashboard</h1>
-<div class="sub">delta scalping research &mdash; paper trading by default &middot; agents keep running even if you close this page</div>
-<div class="warn"><b>Risk reminder:</b> these presets reproduced backtests with -55% to -90% max drawdowns.
-Paper mode is where they belong. Live trading is capped at 2% risk/trade by the bot itself.</div>
+<div class="sub">delta scalping + pattern research &mdash; paper trading by default &middot; agents keep running even if you close this page</div>
+<div class="warn"><b>Risk reminder:</b> scalper presets reproduced backtests with -55% to -90% max drawdowns; the
+pattern presets are research-grade backtests (no fees/slippage modelled). Paper mode is where they all belong.</div>
+
+<div class="panel"><div class="flex"><h2 style="margin:0">Broker &mdash; Delta Exchange India</h2>
+<span id="bstat" class="badge bno">checking…</span></div>
+<div class="brokergrid">
+<div>
+  <div class="mut" style="font-size:12px;margin-bottom:6px">Create an API key at
+  Delta Exchange &rarr; Account &rarr; API keys (read + trade, IP-whitelist this machine).
+  Keys are stored only in <code>agents/.delta_keys.json</code> on this computer.</div>
+  <input id="bkey" placeholder="API key" autocomplete="off">
+  <input id="bsec" placeholder="API secret" type="password" autocomplete="off">
+  <div class="btns">
+    <button class="start" onclick="brokerSave()">Save &amp; connect</button>
+    <button class="ghost" onclick="brokerForget()">Forget keys</button>
+  </div>
+</div>
+<div>
+  <div class="mut" style="font-size:12px;margin-bottom:6px">Wallet</div>
+  <table id="btab"><thead><tr><th>asset</th><th>balance</th><th>available</th></tr></thead><tbody></tbody></table>
+  <div class="mut" id="bmsg" style="font-size:12px;padding-top:6px">not connected</div>
+</div>
+</div></div>
 
 <div class="grid" id="cards"></div>
 
 <div class="panel"><div class="flex"><h2 style="margin:0">Chart (TradingView free widget &mdash; view-only, no login)</h2>
 <select id="tvsym"><option value="BINANCE:BTCUSDT">BTCUSD</option><option value="BINANCE:ETHUSDT">ETHUSD</option></select></div>
-<div id="tvwrap"><div id="tv_chart" style="height:100%"></div></div></div>
+<div id="tvwrap"><div id="tv_chart" style="height:100%"></div></div>
+<div class="mut" style="font-size:11.5px;margin-top:6px">Tip: install the extension in <code>extension/</code> to get this agent's signals as a sidebar inside tradingview.com itself.</div></div>
 
 <div class="panel"><div class="flex"><h2 style="margin:0">Trade journal</h2>
 <select id="jsel"></select></div>
@@ -347,6 +494,25 @@ async function refresh(){
   for(const sel of ['jsel','lsel']) if(!$(sel).options.length)
     $(sel).innerHTML=presets.map(p=>`<option>${p}</option>`).join('');
 }
+async function brokerRefresh(){
+  const b=await (await fetch('/api/broker')).json();
+  const s=$('bstat');
+  if(b.connected){ s.textContent='connected'; s.className='badge bok';
+    $('bmsg').textContent=`key ${b.key_hint} — live balance from Delta Exchange India`;
+    $('btab').tBodies[0].innerHTML=(b.balances||[]).map(x=>
+      `<tr><td>${x.asset}</td><td>${fmt(x.balance)}</td><td>${fmt(x.available)}</td></tr>`).join('');
+  } else if(b.keys_saved){ s.textContent='auth failed'; s.className='badge bno';
+    $('bmsg').textContent=`saved key ${b.key_hint} rejected: ${b.error||''}`;
+  } else { s.textContent='not connected'; s.className='badge bno';
+    $('bmsg').textContent='no API keys saved yet'; }
+}
+async function brokerSave(){
+  const r=await fetch('/api/broker/save',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({api_key:$('bkey').value,api_secret:$('bsec').value})});
+  await r.json(); $('bkey').value='';$('bsec').value=''; brokerRefresh();
+}
+async function brokerForget(){ await fetch('/api/broker/forget',{method:'POST'}); brokerRefresh(); }
 async function loadJournal(){ const p=$('jsel').value; if(!p)return;
   const rows=await (await fetch(`/api/journal?preset=${p}`)).json();
   $('jempty').style.display=rows.length?'none':'block';
@@ -360,8 +526,9 @@ async function loadLog(){ const p=$('lsel').value; if(!p)return;
   const d=await (await fetch(`/api/log?preset=${p}`)).json();
   $('logbox').textContent=d.log||'(no log yet — start the agent)'; }
 $('jsel').onchange=loadJournal; $('lsel').onchange=loadLog;
-refresh(); tv('BINANCE:BTCUSDT');
+refresh(); tv('BINANCE:BTCUSDT'); brokerRefresh();
 setInterval(refresh,5000); setInterval(loadLog,7000); setInterval(loadJournal,15000);
+setInterval(brokerRefresh,30000);
 </script></body></html>
 """
 
@@ -370,16 +537,13 @@ def main():
     global PASSWORD
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default="127.0.0.1",
-                    help="bind address (default localhost only; 0.0.0.0 = whole LAN)")
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--password", default=None,
-                    help="require this password to open the dashboard (browser login box)")
+    ap.add_argument("--password", default=None)
     args = ap.parse_args()
     PASSWORD = args.password
     if args.host != "127.0.0.1" and not PASSWORD:
-        print("refusing to bind beyond localhost without --password "
-              "(anyone on your network could start/stop trading agents).")
+        print("refusing to bind beyond localhost without --password")
         sys.exit(1)
     os.makedirs(LOGS, exist_ok=True)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
@@ -389,8 +553,7 @@ def main():
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\ndashboard stopped (agents keep running; use the buttons or "
-              "kill their pids in agents/logs/*.pid to stop them)")
+        print("\ndashboard stopped (agents keep running)")
 
 
 if __name__ == "__main__":
