@@ -89,6 +89,16 @@ class DeltaClient:
             },
         )
 
+    def get_orderbook(self, symbol: str) -> dict:
+        """L2 order book: {'buy': [...], 'sell': [...]} each level has
+        price/size/depth (depth = cumulative size at or better than price)."""
+        return self._request("GET", f"/v2/l2orderbook/{symbol}")
+
+    def get_recent_trades(self, symbol: str, page_size: int = 200) -> list:
+        """Most recent public trades: size, price, timestamp, buyer_role/
+        seller_role ('taker' identifies the aggressor side)."""
+        return self._request("GET", f"/v2/trades/{symbol}", params={"page_size": page_size})
+
     # ---------- private ----------
 
     def get_balances(self) -> list:

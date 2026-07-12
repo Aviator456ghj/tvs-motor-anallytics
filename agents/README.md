@@ -103,6 +103,54 @@ trades **directly on Delta Exchange**, where the account actually lives.
 The matching Pine scripts in `pine/` give you the same signals visually on
 TradingView charts (with alerts) if you want the chart experience too.
 
+## Market Intelligence Agent — a different kind of agent, on purpose
+
+Every preset above is a mechanical rule, walk-forward backtested with a
+measured win rate and profit factor. `market_intel_agent.py` is not that —
+it's a real-time **monitor**, built to answer "find the big money moves,
+market conditions, and order books, with self-thinking" directly:
+
+```bash
+python agents/market_intel_agent.py --symbol BTCUSD
+```
+
+or through the dashboard: the **Market Intelligence** panel has a card per
+symbol (BTC/ETH/SOL/XRP) with its own Start/Stop.
+
+What it actually watches, all real Delta Exchange India public data:
+- **Order book**: bid/ask depth imbalance and the single largest resting
+  wall on each side (a real, visible large limit order)
+- **Recent trades**: aggressive taker buy/sell volume ratio, and individual
+  "whale" prints (trades in the top 1% of recent size)
+- **Open interest change (6h) and funding rate** — futures-specific
+  positioning: rising OI + one-sided funding often means new money, not
+  just existing positions changing hands
+- **Volatility and trend regime** (ATR percentile vs its own history;
+  ADX-style directional strength) — "market conditions"
+- **Crypto news** (CoinDesk public RSS, no key needed), keyword-flagged for
+  regulation/ETF/hack/macro headlines — the categories most likely to move
+  crypto independent of chart structure
+
+All of that is deterministic and always on — no API key needed. **The
+"self-thinking" part is optional and separate:**
+
+```bash
+ANTHROPIC_API_KEY=sk-... python agents/market_intel_agent.py --symbol BTCUSD --reason
+```
+
+With `--reason` and your own Anthropic API key, it sends the structured
+snapshot to Claude and gets back a plain-English synthesis, a bias
+(bullish/bearish/neutral/conflicting), a confidence level, and — this
+matters — explicit caveats about what would make it wrong. **This step has
+no win rate.** An LLM call isn't a deterministic function you can cheaply
+replay against years of history the way a candle rule is, so there is no
+backtest for it and no validation claim — treat it as a second opinion to
+think about, not a signal to size into. It never places an order; it only
+writes alerts to `agents/logs/market_intel_<symbol>.json` (which the
+dashboard reads). Wiring an LLM's judgment directly into order placement
+would be a materially bigger, riskier step this script deliberately does
+not take.
+
 ## Honest expectations
 
 A backtest's +18,552% is not a forecast. The equity curves behind these

@@ -15,6 +15,10 @@ What you get in the browser:
   - an embedded TradingView chart (free public widget, view-only)
   - a "Broker: Delta Exchange" panel — save API key/secret, test the
     connection, and see your live wallet balance
+  - a "Market Intelligence" panel per symbol — whale trades, order-book
+    imbalance, open interest/funding, volatility/trend regime, and news
+    (agents/market_intel_agent.py). This is a MONITOR, not a backtested
+    strategy — no win rate, no auto-execution.
 
 About TradingView logins: the agent does NOT log into TradingView, on
 purpose. TradingView has no public order API — orders execute at Delta
@@ -56,6 +60,13 @@ PRESETS = {**SCALPER_PRESETS, **PATTERN_PRESETS}
 RUNNER = {name: "run_agent.py" for name in SCALPER_PRESETS}
 RUNNER.update({name: "pattern_agent.py" for name in PATTERN_PRESETS})
 
+# Market Intelligence Agent — a real-time whale/order-flow/regime/news
+# MONITOR, not a backtested strategy (see agents/market_intel_agent.py's
+# module docstring). Runs alongside the trading presets, writes alerts
+# to agents/logs/market_intel_<symbol>.json, never places orders.
+INTEL_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"]
+INTEL_PRESETS = {f"intel-{sym}": sym for sym in INTEL_SYMBOLS}
+
 PRESET_META = {
     name: {"strategy": p["strategy"], "symbol": p["symbols"][0]}
     for name, p in PRESETS.items()
@@ -92,7 +103,8 @@ def _pid_alive(pid, preset):
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             cmd = f.read().decode(errors="replace")
-        return preset in cmd and ("run_agent" in cmd or "pattern_agent" in cmd)
+        return preset in cmd and ("run_agent" in cmd or "pattern_agent" in cmd
+                                  or "market_intel_agent" in cmd)
     except FileNotFoundError:
         return True
 
@@ -103,7 +115,15 @@ def agent_pid(preset):
             pid = int(f.read().strip())
     except (OSError, ValueError):
         return None
-    return pid if _pid_alive(pid, preset) else None
+    marker = INTEL_PRESETS[preset] if preset in INTEL_PRESETS else preset
+    return pid if _pid_alive(pid, marker) else None
+
+
+def _agent_argv(preset):
+    if preset in INTEL_PRESETS:
+        return [sys.executable, os.path.join(AGENTS_DIR, "market_intel_agent.py"),
+                "--symbol", INTEL_PRESETS[preset]]
+    return [sys.executable, os.path.join(AGENTS_DIR, RUNNER[preset]), preset]
 
 
 def start_agent(preset):
@@ -120,7 +140,7 @@ def start_agent(preset):
     else:
         kwargs["start_new_session"] = True
     p = subprocess.Popen(
-        [sys.executable, os.path.join(AGENTS_DIR, RUNNER[preset]), preset],
+        _agent_argv(preset),
         stdout=out, stderr=subprocess.STDOUT, cwd=REPO, **kwargs,
     )
     with open(pid_file(preset), "w") as f:
@@ -250,6 +270,17 @@ def log_tail(preset, lines=60):
     return "\n".join(text.splitlines()[-lines:])
 
 
+def intel_data(symbol):
+    """Latest Market Intelligence snapshot for a symbol, or None if that
+    agent hasn't produced one yet (never started, or first cycle pending)."""
+    path = os.path.join(LOGS, f"market_intel_{symbol}.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def signals_summary():
     """Compact status for the TradingView sidebar extension."""
     out = []
@@ -353,6 +384,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(journal_rows(preset))
         if u.path == "/api/log" and preset in PRESETS:
             return self._json({"log": log_tail(preset)})
+        if u.path == "/api/intel":
+            out = {}
+            for name, sym in INTEL_PRESETS.items():
+                out[name] = {"symbol": sym, "running": agent_pid(name) is not None,
+                            "data": intel_data(sym)}
+            return self._json(out)
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -378,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return self._json({"ok": True})
         preset = (q.get("preset") or [None])[0]
-        if preset not in PRESETS:
+        if preset not in PRESETS and preset not in INTEL_PRESETS:
             return self._json({"error": "unknown preset"}, 400)
         if u.path == "/api/start":
             return self._json(start_agent(preset))
@@ -451,6 +488,13 @@ pattern presets are research-grade backtests (no fees/slippage modelled). Paper 
 </div>
 </div></div>
 
+<div class="panel"><h2 style="margin-bottom:4px">Market Intelligence — whale moves, order flow, regime, news</h2>
+<div class="mut" style="font-size:11.5px;margin-bottom:10px">A real-time MONITOR, not a backtested strategy — it has no win rate or
+profit factor. It watches the order book, recent trades, open interest/funding, volatility/trend regime, and crypto
+headlines, and (only if you set your own <code>ANTHROPIC_API_KEY</code> and start it with <code>--reason</code>) adds a
+plain-English synthesis from Claude. It never places orders.</div>
+<div class="grid" id="intelcards"></div></div>
+
 <div class="grid" id="cards"></div>
 
 <div class="panel"><div class="flex"><h2 style="margin:0">Chart (TradingView free widget &mdash; view-only, no login)</h2>
@@ -494,6 +538,37 @@ async function refresh(){
   for(const sel of ['jsel','lsel']) if(!$(sel).options.length)
     $(sel).innerHTML=presets.map(p=>`<option>${p}</option>`).join('');
 }
+function timeAgo(ts){ if(!ts) return '—'; const s=Math.floor(Date.now()/1000-ts);
+  return s<90?`${s}s ago`:s<5400?`${Math.floor(s/60)}m ago`:`${Math.floor(s/3600)}h ago`; }
+async function intelRefresh(){
+  const st=await (await fetch('/api/intel')).json();
+  $('intelcards').innerHTML=Object.keys(st).map(p=>{
+    const s=st[p], d=s.data;
+    if(!d){
+      return `<div class="card"><h3><span class="dot ${s.running?'on':'off'}"></span>${s.symbol}</h3>
+      <div class="desc">no snapshot yet${s.running?' — first cycle pending':''}</div>
+      <div class="btns">${s.running
+        ?`<button class="stop" onclick="act('${p}','stop');setTimeout(intelRefresh,300)">Stop</button>`
+        :`<button class="start" onclick="act('${p}','start');setTimeout(intelRefresh,300)">Start</button>`}</div></div>`;
+    }
+    const alerts=(d.alerts||[]).slice(0,4).map(a=>`<div class="row" style="color:#d29922">⚠ ${a}</div>`).join('')
+      || `<div class="row mut">no threshold trips this cycle</div>`;
+    const llm=d.llm?`<div class="row" style="margin-top:6px;padding-top:6px;border-top:1px solid #2d333b">
+      <span class="mut">Claude read (${d.llm.confidence||'?'} confidence, ${d.llm.bias||'?'})</span></div>
+      <div class="row" style="font-size:11.5px;color:#c3c2b7">${d.llm.read||''}</div>`:'';
+    return `<div class="card"><h3><span class="dot ${s.running?'on':'off'}"></span>${s.symbol}
+      <span class="mut" style="font-weight:400;font-size:11px"> · ${timeAgo(d.timestamp)}</span></h3>
+      <div class="row"><span class="mut">mark price</span><span>$${fmt(d.mark_price)}</span></div>
+      <div class="row"><span class="mut">book imbalance</span><span>${(d.book_imbalance*100).toFixed(1)}%</span></div>
+      <div class="row"><span class="mut">taker buy ratio</span><span>${(d.taker_buy_ratio*100).toFixed(0)}%</span></div>
+      <div class="row"><span class="mut">regime</span><span>${d.volatility_regime} vol / ${d.trend_regime} ${d.trend_direction}</span></div>
+      <div class="row"><span class="mut">funding</span><span>${(d.funding_rate*100).toFixed(3)}%</span></div>
+      ${alerts}${llm}
+      <div class="btns">${s.running
+        ?`<button class="stop" onclick="act('${p}','stop');setTimeout(intelRefresh,300)">Stop</button>`
+        :`<button class="start" onclick="act('${p}','start');setTimeout(intelRefresh,300)">Start</button>`}</div></div>`;
+  }).join('');
+}
 async function brokerRefresh(){
   const b=await (await fetch('/api/broker')).json();
   const s=$('bstat');
@@ -526,9 +601,9 @@ async function loadLog(){ const p=$('lsel').value; if(!p)return;
   const d=await (await fetch(`/api/log?preset=${p}`)).json();
   $('logbox').textContent=d.log||'(no log yet — start the agent)'; }
 $('jsel').onchange=loadJournal; $('lsel').onchange=loadLog;
-refresh(); tv('BINANCE:BTCUSDT'); brokerRefresh();
+refresh(); tv('BINANCE:BTCUSDT'); brokerRefresh(); intelRefresh();
 setInterval(refresh,5000); setInterval(loadLog,7000); setInterval(loadJournal,15000);
-setInterval(brokerRefresh,30000);
+setInterval(brokerRefresh,30000); setInterval(intelRefresh,10000);
 </script></body></html>
 """
 
