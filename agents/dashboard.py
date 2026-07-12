@@ -491,8 +491,10 @@ pattern presets are research-grade backtests (no fees/slippage modelled). Paper 
 <div class="panel"><h2 style="margin-bottom:4px">Market Intelligence — whale moves, order flow, regime, news</h2>
 <div class="mut" style="font-size:11.5px;margin-bottom:10px">A real-time MONITOR, not a backtested strategy — it has no win rate or
 profit factor. It watches the order book, recent trades, open interest/funding, volatility/trend regime, and crypto
-headlines, and (only if you set your own <code>ANTHROPIC_API_KEY</code> and start it with <code>--reason</code>) adds a
-plain-English synthesis from Claude. It never places orders.</div>
+headlines. Cards below are started via <code>run_agent.py</code> defaults (rule-based only, free, no key). For an
+LLM synthesis on top, run <code>python agents/market_intel_agent.py --symbol X --reason</code> yourself from a
+terminal — free via Ollama by default, or with your own <code>ANTHROPIC_API_KEY</code> and <code>--llm-backend anthropic</code>.
+It never places orders.</div>
 <div class="grid" id="intelcards"></div></div>
 
 <div class="grid" id="cards"></div>

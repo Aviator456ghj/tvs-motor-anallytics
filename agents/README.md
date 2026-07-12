@@ -131,25 +131,40 @@ What it actually watches, all real Delta Exchange India public data:
   regulation/ETF/hack/macro headlines — the categories most likely to move
   crypto independent of chart structure
 
-All of that is deterministic and always on — no API key needed. **The
-"self-thinking" part is optional and separate:**
+All of that is deterministic and always on — **no API key needed, ever,
+for any of it.** The "self-thinking" part is optional and separate, and
+has a genuinely free option:
 
 ```bash
-ANTHROPIC_API_KEY=sk-... python agents/market_intel_agent.py --symbol BTCUSD --reason
+# free: local model via Ollama (https://ollama.com — install once, both free)
+ollama pull llama3.2
+python agents/market_intel_agent.py --symbol BTCUSD --reason
+
+# paid alternative: your own Anthropic key, better quality
+ANTHROPIC_API_KEY=sk-... python agents/market_intel_agent.py --symbol BTCUSD --reason --llm-backend anthropic
 ```
 
-With `--reason` and your own Anthropic API key, it sends the structured
-snapshot to Claude and gets back a plain-English synthesis, a bias
+`--reason` sends the structured snapshot to whichever backend you picked
+and gets back a plain-English synthesis, a bias
 (bullish/bearish/neutral/conflicting), a confidence level, and — this
 matters — explicit caveats about what would make it wrong. **This step has
-no win rate.** An LLM call isn't a deterministic function you can cheaply
-replay against years of history the way a candle rule is, so there is no
-backtest for it and no validation claim — treat it as a second opinion to
-think about, not a signal to size into. It never places an order; it only
-writes alerts to `agents/logs/market_intel_<symbol>.json` (which the
-dashboard reads). Wiring an LLM's judgment directly into order placement
-would be a materially bigger, riskier step this script deliberately does
-not take.
+no win rate**, on either backend. An LLM call isn't a deterministic
+function you can cheaply replay against years of history the way a candle
+rule is, so there is no backtest for it and no validation claim — treat it
+as a second opinion to think about, not a signal to size into. It never
+places an order; it only writes alerts to
+`agents/logs/market_intel_<symbol>.json` (which the dashboard reads).
+Wiring an LLM's judgment directly into order placement would be a
+materially bigger, riskier step this script deliberately does not take.
+
+**Ollama vs Anthropic, honestly:** Ollama is free and unlimited but runs a
+much smaller model than Claude — its reads will be rougher, occasionally
+wrong in ways a bigger model wouldn't be, and it needs a few GB of RAM to
+run smoothly. Anthropic's API gives noticeably better reasoning but costs
+real money past a small one-time free trial credit new accounts get (not
+enough for sustained 24/7 use). If you can't pay for API access, Ollama is
+the right default — you still get the entire whale/order-book/regime/news
+monitor either way; only this one synthesis layer changes.
 
 ## Honest expectations
 

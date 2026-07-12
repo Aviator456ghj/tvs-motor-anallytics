@@ -7,16 +7,26 @@ every strategy preset in this repo. Those are mechanical rules, walk-forward
 backtested on years of candles with a measured win rate and profit factor.
 THIS agent is a real-time MONITOR that surfaces what is actually happening
 right now (whale trades, order book pressure, open interest, funding,
-volatility/trend regime, news headlines) and — only if you supply your own
-Anthropic API key — asks Claude to reason over that snapshot and write a
-plain-English read of the situation. That reasoning step CANNOT be
-backtested the way a candle rule can (an LLM call is not a deterministic,
-cheaply-replayable function over history), so it carries NO win rate, NO
-profit factor, and NO validation claim. Treat its output as a second
-opinion to think about, not a signal to size into. It does NOT place any
-orders — it only prints/logs/writes alerts. Wiring an LLM's judgment
-directly into order placement is a materially bigger, riskier step this
-script deliberately does not take; ask explicitly if you want that.
+volatility/trend regime, news headlines) and — only with --reason — adds
+an LLM's plain-English read of that snapshot. That reasoning step CANNOT
+be backtested the way a candle rule can (an LLM call is not a
+deterministic, cheaply-replayable function over history), so it carries NO
+win rate, NO profit factor, and NO validation claim. Treat its output as a
+second opinion to think about, not a signal to size into. It does NOT
+place any orders — it only prints/logs/writes alerts. Wiring an LLM's
+judgment directly into order placement is a materially bigger, riskier
+step this script deliberately does not take; ask explicitly if you want
+that.
+
+COST: the deterministic monitor above (whale trades, order book, regime,
+news) is 100% free, no LLM needed, no API key, ever. The --reason step has
+TWO backends: 'ollama' (default) runs a free, open-source model on your
+own machine via Ollama (https://ollama.com) — no account, no API key, no
+cost, unlimited use, just weaker reasoning than Claude. 'anthropic' calls
+Claude with your own ANTHROPIC_API_KEY — better quality, but real API
+pricing applies past the small one-time free trial credit new accounts
+get. If you can't pay for API access, use the default (ollama) — everyone
+gets the full whale/order-book/regime/news monitor either way.
 
 What it actually watches (all real data, no news/LLM needed for this part):
   - Order book: bid/ask depth imbalance, the single largest resting "wall"
@@ -38,7 +48,10 @@ What it actually watches (all real data, no news/LLM needed for this part):
 Usage:
     python agents/market_intel_agent.py --symbol BTCUSD
     python agents/market_intel_agent.py --symbol ETHUSD --interval 300
-    ANTHROPIC_API_KEY=sk-... python agents/market_intel_agent.py --symbol BTCUSD --reason
+    # free LLM synthesis (needs Ollama installed + a model pulled, both free):
+    python agents/market_intel_agent.py --symbol BTCUSD --reason
+    # paid, higher-quality alternative, needs your own key:
+    ANTHROPIC_API_KEY=sk-... python agents/market_intel_agent.py --symbol BTCUSD --reason --llm-backend anthropic
 
 Writes each snapshot (and, with --reason, the LLM synthesis) to
 agents/logs/market_intel_<symbol>.json, which the dashboard reads.
@@ -156,21 +169,8 @@ def rule_based_alerts(d):
     return alerts
 
 
-def llm_reasoning(d, alerts):
-    """Optional: send the structured snapshot to Claude for a synthesized
-    read. Requires the user's OWN ANTHROPIC_API_KEY — never embed one.
-    Returns None (not an error) if no key is set, so the rest of the
-    agent works identically with or without this layer."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        log.warning("`pip install anthropic` to enable --reason (LLM synthesis)")
-        return None
-    client = anthropic.Anthropic(api_key=api_key)
-    prompt = f"""You are a market-microstructure analyst. Below is a real,
+def _reasoning_prompt(d, alerts):
+    return f"""You are a market-microstructure analyst. Below is a real,
 live snapshot of {d['symbol']} on Delta Exchange India. Reason about it
 plainly. You are NOT placing trades or giving financial advice — you are
 summarizing what the data shows and flagging genuine uncertainty. If the
@@ -183,25 +183,79 @@ SNAPSHOT:
 RULE-BASED ALERTS ALREADY TRIGGERED:
 {json.dumps(alerts, indent=2)}
 
-Respond with a compact JSON object only:
+Respond with ONLY a compact JSON object, no other text, no markdown fences:
 {{"read": "<2-4 sentence plain-English synthesis>",
   "bias": "bullish" | "bearish" | "neutral" | "conflicting",
   "confidence": "low" | "medium" | "high",
   "worth_a_look": true | false,
   "caveats": "<what would make you wrong>"}}"""
+
+
+def _parse_llm_json(text):
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)  # tolerate a stray sentence around the JSON
+    return json.loads(m.group(0) if m else text)
+
+
+def llm_reasoning_anthropic(d, alerts):
+    """Paid: Anthropic's API, the user's OWN ANTHROPIC_API_KEY (never
+    embed one). Returns None (not an error) if no key is set, so the rest
+    of the agent works identically with or without this layer. A new
+    Anthropic account gets a small one-time free credit (~$5 as of this
+    writing) — enough to try this, not enough to run it 24/7. For
+    genuinely free, unlimited reasoning, use --llm-backend ollama below."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        log.warning("`pip install anthropic` to enable --llm-backend anthropic")
+        return None
+    client = anthropic.Anthropic(api_key=api_key)
     try:
         resp = client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
+            model="claude-sonnet-5", max_tokens=500,
+            messages=[{"role": "user", "content": _reasoning_prompt(d, alerts)}],
         )
-        text = resp.content[0].text.strip()
-        text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-        return json.loads(text)
+        return _parse_llm_json(resp.content[0].text)
     except Exception as e:
-        log.warning("LLM reasoning call failed: %s", e)
-        return {"read": f"(LLM call failed: {e})", "bias": "unknown",
+        log.warning("Anthropic reasoning call failed: %s", e)
+        return {"read": f"(Anthropic call failed: {e})", "bias": "unknown",
                 "confidence": "low", "worth_a_look": False, "caveats": ""}
+
+
+def llm_reasoning_ollama(d, alerts, model="llama3.2", host="http://localhost:11434"):
+    """FREE, unlimited, runs entirely on your own machine via Ollama
+    (https://ollama.com — free, open-source, no account, no API key).
+    Install once, pull a model once (both free), then this costs nothing
+    per call, ever — no rate limit, no credit card. Quality is well below
+    Claude (these are much smaller models), so treat it as a rougher first
+    pass, and double-check anything it flags as significant. Returns None
+    (not an error) if Ollama isn't running, so the rest of the agent works
+    identically without it."""
+    import urllib.request as _u
+    payload = json.dumps({
+        "model": model, "stream": False, "format": "json",
+        "messages": [{"role": "user", "content": _reasoning_prompt(d, alerts)}],
+    }).encode()
+    try:
+        req = _u.Request(f"{host}/api/chat", data=payload,
+                         headers={"Content-Type": "application/json"})
+        with _u.urlopen(req, timeout=60) as r:
+            resp = json.loads(r.read())
+        return _parse_llm_json(resp["message"]["content"])
+    except Exception as e:
+        log.warning("Ollama reasoning call failed (is `ollama serve` running? "
+                    "did you `ollama pull %s`?): %s", model, e)
+        return {"read": f"(Ollama call failed: {e})", "bias": "unknown",
+                "confidence": "low", "worth_a_look": False, "caveats": ""}
+
+
+def llm_reasoning(d, alerts, backend="anthropic", model=None):
+    if backend == "ollama":
+        return llm_reasoning_ollama(d, alerts, model=model or "llama3.2")
+    return llm_reasoning_anthropic(d, alerts)
 
 
 def main():
@@ -211,7 +265,14 @@ def main():
     ap.add_argument("--timeframe", default="15m", choices=["15m", "1h"])
     ap.add_argument("--interval", type=int, default=120, help="seconds between snapshots")
     ap.add_argument("--reason", action="store_true",
-                    help="also call Claude for a synthesized read (needs ANTHROPIC_API_KEY)")
+                    help="also get an LLM synthesized read (see --llm-backend)")
+    ap.add_argument("--llm-backend", default="ollama", choices=["ollama", "anthropic"],
+                    help="'ollama' (default): free, local, unlimited, needs Ollama installed. "
+                         "'anthropic': needs your own ANTHROPIC_API_KEY, better quality, costs money "
+                         "past the small one-time free trial credit.")
+    ap.add_argument("--llm-model", default=None,
+                    help="model name for the chosen backend (default: llama3.2 for ollama, "
+                         "claude-sonnet-5 for anthropic)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -220,10 +281,11 @@ def main():
 
     cfg = Config()
     client = DeltaClient(cfg.base_url)
-    log.info("Market Intelligence Agent starting: %s %s interval=%ss reason=%s",
-             args.symbol, args.timeframe, args.interval, args.reason)
+    log.info("Market Intelligence Agent starting: %s %s interval=%ss reason=%s backend=%s",
+             args.symbol, args.timeframe, args.interval, args.reason, args.llm_backend)
     if not args.reason:
-        log.info("Running rule-based only (pass --reason + ANTHROPIC_API_KEY for LLM synthesis)")
+        log.info("Running rule-based only (pass --reason for an LLM synthesis on top; "
+                 "default backend is Ollama, free and local)")
 
     news_cache, news_fetched_at = [], 0
     while True:
@@ -241,7 +303,7 @@ def main():
             else:
                 log.info("[%s] no threshold trips this cycle (price=%.2f)", args.symbol, snap.mark_price)
             if args.reason:
-                d["llm"] = llm_reasoning(d, alerts)
+                d["llm"] = llm_reasoning(d, alerts, backend=args.llm_backend, model=args.llm_model)
                 if d["llm"]:
                     log.info("LLM read: %s", d["llm"].get("read"))
             with open(out_path, "w") as f:
