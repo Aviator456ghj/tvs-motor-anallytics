@@ -132,6 +132,26 @@ toggles, plus a price/demo-equity timeline sparkline (from a rolling
 `market_intel_<symbol>_history.jsonl`, not just the latest snapshot) and
 a full alert-history log per symbol.
 
+It also has a **Live chart** panel: the free TradingView widget (same
+view-only embed as `dashboard.py`, no login) side-by-side with a
+self-hosted chart (`lightweight-charts`, free/open-source, no account)
+that the agent draws its own analysis onto — the biggest resting bid/ask
+walls as horizontal lines, whale trades as up/down markers, and (if a
+demo trade is open) its entry/stop/target lines — all live from real
+Delta Exchange data, refreshed automatically. Both chart libraries load
+from a public CDN; if either is unreachable (offline, blocked network)
+the panel says so and the rest of the dashboard keeps working.
+
+And a **Broker — Delta Exchange TESTNET** panel: save your *testnet*
+(practice-money) API key/secret from testnet.delta.exchange to see your
+testnet wallet balance — completely separate from `dashboard.py`'s live
+broker panel (different keys file, different Delta Exchange environment,
+`cdn-ind.testnet.deltaex.org` not `api.india.delta.exchange`). It also
+shows the public IP this machine is making requests from, for pasting
+into Delta Exchange's API key IP-whitelist field. Like the live broker
+panel, this is read-only balance-checking only — nothing in this repo
+places an order through it.
+
 What it actually watches, all real Delta Exchange India public data:
 - **Order book**: bid/ask depth imbalance and the single largest resting
   wall on each side (a real, visible large limit order)

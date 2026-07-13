@@ -161,7 +161,7 @@ def snapshot_to_dict(snap, news):
         "biggest_bid_wall": snap.biggest_bid_wall, "biggest_ask_wall": snap.biggest_ask_wall,
         "taker_buy_ratio": round(snap.taker_buy_ratio, 3),
         "whale_trades": [{"price": w.price, "size": w.size, "notional_usd": round(w.notional_usd),
-                         "side": w.side} for w in snap.whale_trades],
+                         "side": w.side, "timestamp": w.timestamp} for w in snap.whale_trades],
         "oi_change_usd_6h": snap.oi_change_usd_6h, "funding_rate": snap.funding_rate,
         "volatility_regime": snap.volatility_regime, "trend_regime": snap.trend_regime,
         "trend_direction": snap.trend_direction, "news": news,

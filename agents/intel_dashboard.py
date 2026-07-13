@@ -25,12 +25,16 @@ here.
 """
 import argparse
 import base64
+import hashlib
+import hmac
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -40,9 +44,19 @@ sys.path.insert(0, AGENTS_DIR)
 sys.path.insert(0, REPO)
 
 from market_intel_agent import CONTRACT_VALUE, LOGS  # noqa: E402
+from delta_scalper.config import Config              # noqa: E402
+from delta_scalper.delta_client import DeltaClient   # noqa: E402
 
 SYMBOLS = list(CONTRACT_VALUE)
+TV_SYMBOL = {"BTCUSD": "BINANCE:BTCUSDT", "ETHUSD": "BINANCE:ETHUSDT",
+             "SOLUSD": "BINANCE:SOLUSDT", "XRPUSD": "BINANCE:XRPUSDT"}
 PASSWORD = None  # set from --password
+
+# separate from agents/.delta_keys.json (dashboard.py's LIVE keys) on purpose —
+# this is the practice-money testnet, a different Delta Exchange environment
+# with its own account/keys entirely.
+TESTNET_BASE = "https://cdn-ind.testnet.deltaex.org"
+TESTNET_KEYS_FILE = os.path.join(AGENTS_DIR, ".delta_testnet_keys.json")
 
 
 # ───────────────────────── process management ─────────────────────────
@@ -180,6 +194,99 @@ def log_tail(symbol, lines=60):
     return "\n".join(text.splitlines()[-lines:])
 
 
+# ───────────────────────── broker: Delta Exchange TESTNET ─────────────────────────
+# Practice-money environment — a separate Delta Exchange account/keys from
+# the live one dashboard.py connects to. Never used for order placement by
+# this file; it's read-only balance/connectivity check, same as
+# dashboard.py's broker panel. Wiring an actual order-placement path (even
+# to testnet) is a bigger, separate step this file does not take.
+
+def load_testnet_keys():
+    try:
+        with open(TESTNET_KEYS_FILE) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_testnet_keys(api_key, api_secret):
+    with open(TESTNET_KEYS_FILE, "w") as f:
+        json.dump({"api_key": api_key, "api_secret": api_secret}, f)
+    try:
+        os.chmod(TESTNET_KEYS_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def testnet_signed_get(path, query=""):
+    keys = load_testnet_keys()
+    if not keys.get("api_key"):
+        return {"error": "no keys saved"}
+    ts = str(int(time.time()))
+    msg = "GET" + ts + path + (("?" + query) if query else "") + ""
+    sig = hmac.new(keys["api_secret"].encode(), msg.encode(), hashlib.sha256).hexdigest()
+    url = TESTNET_BASE + path + (("?" + query) if query else "")
+    req = urllib.request.Request(url, headers={
+        "api-key": keys["api_key"], "timestamp": ts, "signature": sig,
+        "User-Agent": "intel-dashboard/1.0", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return {"error": f"HTTP {e.code}", "detail": json.loads(e.read().decode())}
+        except Exception:
+            return {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def testnet_broker_status():
+    keys = load_testnet_keys()
+    out = {"connected": False, "keys_saved": bool(keys.get("api_key")),
+           "key_hint": (keys.get("api_key", "")[:6] + "…") if keys.get("api_key") else None}
+    if not out["keys_saved"]:
+        return out
+    res = testnet_signed_get("/v2/wallet/balances")
+    if isinstance(res, dict) and res.get("success"):
+        bals = [{"asset": b.get("asset_symbol"), "balance": b.get("balance"),
+                 "available": b.get("available_balance")}
+                for b in res.get("result", []) if float(b.get("balance", 0) or 0) != 0]
+        out["connected"] = True
+        out["balances"] = bals or [{"asset": "—", "balance": "0", "available": "0"}]
+    else:
+        out["error"] = res.get("error") or "authentication failed"
+        out["detail"] = res.get("detail")
+    return out
+
+
+def public_ip():
+    """Best-effort outbound public IP, for whitelisting this machine's IP
+    in Delta Exchange's API-key settings. Whatever machine actually runs
+    this dashboard is what Delta sees, so this is only meaningful when run
+    on your own always-on box, not a sandboxed/shared environment."""
+    try:
+        with urllib.request.urlopen("https://api.ipify.org?format=json", timeout=5) as r:
+            return {"ip": json.load(r).get("ip")}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ───────────────────────── live candles (for the agent-markup chart) ─────────────────────────
+
+def fetch_candles(symbol, timeframe, limit=200):
+    cfg = Config()
+    client = DeltaClient(cfg.base_url)
+    tf_sec = {"15m": 900, "1h": 3600}.get(timeframe, 900)
+    resolution = "1h" if timeframe == "1h" else timeframe
+    end = int(time.time())
+    start = end - limit * tf_sec
+    data = client.get_candles(symbol, resolution, start, end)
+    data.sort(key=lambda c: c["time"])
+    return [{"time": int(c["time"]), "open": float(c["open"]), "high": float(c["high"]),
+             "low": float(c["low"]), "close": float(c["close"])} for c in data]
+
+
 # ───────────────────────── http server ─────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -247,6 +354,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(alert_history(symbol))
         if u.path == "/api/log" and symbol in SYMBOLS:
             return self._json({"log": log_tail(symbol)})
+        if u.path == "/api/candles" and symbol in SYMBOLS:
+            tf = (q.get("timeframe") or ["15m"])[0]
+            limit = int((q.get("limit") or [200])[0])
+            try:
+                return self._json(fetch_candles(symbol, tf, limit))
+            except Exception as e:
+                return self._json({"error": str(e)}, 502)
+        if u.path == "/api/testnet/status":
+            return self._json(testnet_broker_status())
+        if u.path == "/api/myip":
+            return self._json(public_ip())
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -254,6 +372,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._deny()
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path == "/api/testnet/save":
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                d = json.loads(self.rfile.read(n).decode())
+                key, sec = d.get("api_key", "").strip(), d.get("api_secret", "").strip()
+                if not key or not sec:
+                    return self._json({"ok": False, "error": "key and secret required"}, 400)
+                save_testnet_keys(key, sec)
+                return self._json({"ok": True, **testnet_broker_status()})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, 400)
+        if u.path == "/api/testnet/forget":
+            try:
+                os.remove(TESTNET_KEYS_FILE)
+            except OSError:
+                pass
+            return self._json({"ok": True})
         symbol = (q.get("symbol") or [None])[0]
         if symbol not in SYMBOLS:
             return self._json({"error": "unknown symbol"}, 400)
@@ -317,12 +452,63 @@ pre{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:10
 select#detailsel{margin-bottom:8px}
 .alertlog{font-size:11.5px;border-bottom:1px solid #21262d;padding:6px 0}
 .alertlog .t{color:var(--mut);font-size:10.5px}
+#tvwrap{height:400px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin-bottom:10px}
+#agent_chart{height:400px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.chartgrid{display:grid;grid-template-columns:1fr;gap:14px}
+@media(min-width:1100px){.chartgrid{grid-template-columns:1fr 1fr}}
+.bok{background:#12351f;color:var(--up)} .bno{background:#3a1416;color:var(--dn)}
+.brokergrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){.brokergrid{grid-template-columns:1fr}}
+input[type=password]{background:#21262d;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 8px;width:100%;margin:4px 0;font-size:12.5px}
+.ipbox{display:flex;gap:8px;align-items:center;background:#0a0d12;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:12.5px;margin-bottom:10px}
+.ipbox code{color:var(--accent);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{color:var(--mut);text-align:left;font-weight:500;padding:4px 8px;border-bottom:1px solid var(--line)}
+td{padding:4px 8px;border-bottom:1px solid #21262d;font-variant-numeric:tabular-nums}
 </style></head><body>
 <h1>Market Intelligence — Second Brain</h1>
 <div class="sub">continuous per-asset monitor: order book, whale trades, OI/funding, volatility &amp; trend regime, news, optional LLM read &mdash; a separate app from the scalper dashboard on purpose</div>
 <div class="warn"><b>Not a signal source:</b> everything here is read-only observation plus an optional LLM opinion with no win rate. Demo trading (if enabled) is 100% simulated — this never places a real order. See <code>agents/market_intel_agent.py</code> docstring.</div>
 
 <div class="grid" id="cards"></div>
+
+<div class="panel"><div class="flex" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+<h2 style="margin:0">Live chart</h2>
+<div style="display:flex;gap:8px">
+<select id="chartsym"></select>
+<select id="charttf"><option value="15m">15m</option><option value="1h">1h</option></select>
+</div></div>
+<div class="chartgrid">
+<div><div class="mut" style="font-size:11px;margin-bottom:4px">TradingView (free public widget, view-only, no login)</div>
+<div id="tvwrap"><div id="tv_chart" style="height:100%"></div></div></div>
+<div><div class="mut" style="font-size:11px;margin-bottom:4px">Agent markup — live candles from Delta Exchange with the agent's own detected levels drawn on top (bid/ask walls, whale prints, demo entry/stop/target)</div>
+<div id="agent_chart"></div></div>
+</div></div>
+
+<div class="panel"><div class="flex" style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">Broker &mdash; Delta Exchange TESTNET (practice funds)</h2>
+<span id="tnstat" class="badge bno">checking…</span></div>
+<div class="ipbox">Your public IP (add to Delta Exchange API key IP-whitelist): <code id="myip">checking…</code>
+<button class="ghost" onclick="copyIp()">Copy</button></div>
+<div class="brokergrid">
+<div>
+  <div class="mut" style="font-size:12px;margin-bottom:6px">Create keys on your <b>testnet/demo</b> account at
+  testnet.delta.exchange &rarr; API keys. These are practice funds, separate from your real
+  account — keys are stored only in <code>agents/.delta_testnet_keys.json</code> on this computer,
+  never sent anywhere except <code>cdn-ind.testnet.deltaex.org</code>.</div>
+  <input id="tnkey" placeholder="Testnet API key" autocomplete="off">
+  <input id="tnsec" placeholder="Testnet API secret" type="password" autocomplete="off">
+  <div class="btns">
+    <button class="start" onclick="testnetSave()">Save &amp; connect</button>
+    <button class="ghost" onclick="testnetForget()">Forget keys</button>
+  </div>
+</div>
+<div>
+  <div class="mut" style="font-size:12px;margin-bottom:6px">Testnet wallet</div>
+  <table id="tntab"><thead><tr><th>asset</th><th>balance</th><th>available</th></tr></thead><tbody></tbody></table>
+  <div class="mut" id="tnmsg" style="font-size:12px;padding-top:6px">not connected</div>
+</div>
+</div></div>
 
 <div class="panel"><div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="margin:0">Detail &amp; alert timeline</h2>
@@ -333,9 +519,12 @@ select#detailsel{margin-bottom:8px}
 <h2 style="margin:0">Process log</h2>
 <select id="logsel"></select></div><pre id="logbox">select a symbol…</pre></div>
 
+<script src="https://s3.tradingview.com/tv.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const SYMBOLS=__SYMBOLS__;
+const TV_SYMBOL=__TV_SYMBOL__;
 function fmt(x,d=2){ return x==null||x==='—'?'—':(+x).toLocaleString(undefined,{maximumFractionDigits:d}); }
 function pct(x){ return x==null?'—':((+x)*100).toFixed(1)+'%'; }
 function regimeBadge(v){ return `<span class="badge b-${v}">${v}</span>`; }
@@ -419,10 +608,106 @@ async function loadLog(){
   $('logbox').textContent=d.log||'(no log yet — start the agent)';
 }
 $('detailsel').onchange=loadAlerts; $('logsel').onchange=loadLog;
-refresh(); setTimeout(()=>{loadAlerts();loadLog();},600);
+
+// ── live chart: TradingView free widget + self-hosted agent-markup chart ──
+if(!$('chartsym').options.length) $('chartsym').innerHTML=SYMBOLS.map(s=>`<option>${s}</option>`).join('');
+function tv(sym){
+  try{
+    $('tv_chart').innerHTML='';
+    new TradingView.widget({symbol:sym,interval:'60',theme:'dark',autosize:true,
+      container_id:'tv_chart',hide_side_toolbar:true,allow_symbol_change:false});
+  }catch(e){
+    console.error('TradingView widget failed to load', e);
+    $('tv_chart').innerHTML='<div class="mut" style="padding:20px;font-size:12px">TradingView widget failed to load (offline / blocked script). The agent markup chart on the right still works from live Delta Exchange data.</div>';
+  }
+}
+let agentChart=null, candleSeries=null, priceLines=[];
+function ensureAgentChart(){
+  if(candleSeries) return true;
+  if(typeof LightweightCharts==='undefined') return false;
+  try{
+    agentChart=LightweightCharts.createChart(document.getElementById('agent_chart'),{
+      layout:{background:{color:'#0a0d12'},textColor:'#8b949e'},
+      grid:{vertLines:{color:'#1c222c'},horzLines:{color:'#1c222c'}},
+      timeScale:{timeVisible:true,secondsVisible:false},
+      width:document.getElementById('agent_chart').clientWidth, height:400,
+    });
+    candleSeries=agentChart.addCandlestickSeries({upColor:'#3fb950',downColor:'#f85149',
+      borderVisible:false,wickUpColor:'#3fb950',wickDownColor:'#f85149'});
+    window.addEventListener('resize',()=>{try{agentChart.resize(document.getElementById('agent_chart').clientWidth,400);}catch(e){}});
+    return true;
+  }catch(e){ console.error('agent chart init failed', e); return false; }
+}
+async function refreshAgentChart(){
+  const sym=$('chartsym').value, tf=$('charttf').value;
+  if(!ensureAgentChart()){
+    $('agent_chart').innerHTML='<div class="mut" style="padding:20px;font-size:12px">Chart library failed to load (offline / blocked CDN). The TradingView widget on the left still works.</div>';
+    return;
+  }
+  try{
+    const candles=await (await fetch(`/api/candles?symbol=${sym}&timeframe=${tf}&limit=200`)).json();
+    if(candles.error||!candles.length) return;
+    candleSeries.setData(candles.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    priceLines.forEach(pl=>{try{candleSeries.removePriceLine(pl);}catch(e){}}); priceLines=[];
+    const st=await (await fetch('/api/status')).json();
+    const snap=st[sym]&&st[sym].snapshot;
+    if(snap){
+      const bw=snap.biggest_bid_wall, aw=snap.biggest_ask_wall;
+      if(bw&&bw.price) priceLines.push(candleSeries.createPriceLine({price:bw.price,color:'#3fb950',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'bid wall $'+Math.round(bw.usd/1000)+'k'}));
+      if(aw&&aw.price) priceLines.push(candleSeries.createPriceLine({price:aw.price,color:'#f85149',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'ask wall $'+Math.round(aw.usd/1000)+'k'}));
+      const pos=snap.demo_position;
+      if(pos){
+        if(pos.entry_price) priceLines.push(candleSeries.createPriceLine({price:pos.entry_price,color:'#7aa2ff',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'entry'}));
+        if(pos.stop_loss) priceLines.push(candleSeries.createPriceLine({price:pos.stop_loss,color:'#f85149',lineWidth:1,lineStyle:0,axisLabelVisible:true,title:'stop'}));
+        if(pos.take_profit) priceLines.push(candleSeries.createPriceLine({price:pos.take_profit,color:'#3fb950',lineWidth:1,lineStyle:0,axisLabelVisible:true,title:'target'}));
+      }
+      const lastT=candles[candles.length-1].time;
+      const markers=(snap.whale_trades||[]).map(w=>({
+        time: w.timestamp||lastT,
+        position: w.side==='buy'?'belowBar':'aboveBar',
+        color: w.side==='buy'?'#3fb950':'#f85149',
+        shape: w.side==='buy'?'arrowUp':'arrowDown',
+        text: '$'+Math.round(w.notional_usd/1000)+'k',
+      })).sort((a,b)=>a.time-b.time);
+      candleSeries.setMarkers(markers);
+    }
+  }catch(e){ console.error('agent chart refresh failed', e); }
+}
+$('chartsym').onchange=()=>{ tv(TV_SYMBOL[$('chartsym').value]||'BINANCE:BTCUSDT'); refreshAgentChart(); };
+$('charttf').onchange=refreshAgentChart;
+
+// ── testnet broker ──
+async function testnetRefresh(){
+  const b=await (await fetch('/api/testnet/status')).json();
+  const s=$('tnstat');
+  if(b.connected){ s.textContent='connected'; s.className='badge bok';
+    $('tnmsg').textContent=`key ${b.key_hint} — practice balance from Delta Exchange testnet`;
+    $('tntab').tBodies[0].innerHTML=(b.balances||[]).map(x=>
+      `<tr><td>${x.asset}</td><td>${fmt(x.balance)}</td><td>${fmt(x.available)}</td></tr>`).join('');
+  } else if(b.keys_saved){ s.textContent='auth failed'; s.className='badge bno';
+    $('tnmsg').textContent=`saved key ${b.key_hint} rejected: ${b.error||''}`;
+  } else { s.textContent='not connected'; s.className='badge bno';
+    $('tnmsg').textContent='no testnet API keys saved yet'; }
+}
+async function testnetSave(){
+  const r=await fetch('/api/testnet/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({api_key:$('tnkey').value,api_secret:$('tnsec').value})});
+  await r.json(); $('tnkey').value='';$('tnsec').value=''; testnetRefresh();
+}
+async function testnetForget(){ await fetch('/api/testnet/forget',{method:'POST'}); testnetRefresh(); }
+async function loadIp(){
+  const r=await (await fetch('/api/myip')).json();
+  $('myip').textContent=r.ip||('unavailable: '+(r.error||'unknown'));
+}
+function copyIp(){ const t=$('myip').textContent; if(navigator.clipboard) navigator.clipboard.writeText(t); }
+
+for(const fn of [refresh, ()=>tv(TV_SYMBOL[SYMBOLS[0]]), refreshAgentChart, testnetRefresh, loadIp])
+  try{ fn(); }catch(e){ console.error(e); }
+setTimeout(()=>{loadAlerts();loadLog();},600);
 setInterval(refresh,8000); setInterval(loadAlerts,15000); setInterval(loadLog,10000);
+setInterval(refreshAgentChart,15000); setInterval(testnetRefresh,30000);
 </script></body></html>
-""".replace("__SYMBOLS__", json.dumps(SYMBOLS))
+""".replace("__SYMBOLS__", json.dumps(SYMBOLS)).replace("__TV_SYMBOL__", json.dumps(TV_SYMBOL))
 
 
 def main():
