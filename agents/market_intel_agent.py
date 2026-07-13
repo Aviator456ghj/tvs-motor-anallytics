@@ -350,6 +350,39 @@ def llm_reasoning(d, alerts, backend="anthropic", model=None):
     return llm_reasoning_anthropic(d, alerts)
 
 
+HISTORY_MAX_LINES = 2000
+
+
+def append_history(symbol, d):
+    """Rolling per-symbol history (one JSON line per cycle), so a UI can
+    show a real timeline -- alerts/regime/demo-equity over time, not just
+    the latest snapshot. Self-trims so the file never grows unbounded."""
+    path = os.path.join(LOGS, f"market_intel_{symbol}_history.jsonl")
+    line = json.dumps({
+        "timestamp": d["timestamp"], "mark_price": d["mark_price"],
+        "book_imbalance": d["book_imbalance"], "taker_buy_ratio": d["taker_buy_ratio"],
+        "volatility_regime": d["volatility_regime"], "trend_regime": d["trend_regime"],
+        "trend_direction": d["trend_direction"], "funding_rate": d["funding_rate"],
+        "oi_change_usd_6h": d["oi_change_usd_6h"], "alerts": d.get("alerts", []),
+        "whale_count": len(d.get("whale_trades", [])),
+        "llm_bias": (d.get("llm") or {}).get("bias"),
+        "llm_confidence": (d.get("llm") or {}).get("confidence"),
+        "demo_equity": d.get("demo_equity"),
+    }, default=str)
+    with open(path, "a") as f:
+        f.write(line + "\n")
+    # trim occasionally rather than every cycle (cheap check, rare rewrite)
+    if int(d["timestamp"]) % 50 == 0:
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+            if len(lines) > HISTORY_MAX_LINES:
+                with open(path, "w") as f:
+                    f.writelines(lines[-HISTORY_MAX_LINES:])
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -416,6 +449,7 @@ def main():
                 d["demo_position"] = demo.account.position
             with open(out_path, "w") as f:
                 json.dump(d, f, indent=2, default=str)
+            append_history(args.symbol, d)
         except KeyboardInterrupt:
             log.info("stopped by user")
             return

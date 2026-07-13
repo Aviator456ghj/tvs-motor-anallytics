@@ -114,8 +114,23 @@ market conditions, and order books, with self-thinking" directly:
 python agents/market_intel_agent.py --symbol BTCUSD
 ```
 
-or through the dashboard: the **Market Intelligence** panel has a card per
-symbol (BTC/ETH/SOL/XRP) with its own Start/Stop.
+or through its **own separate dashboard** — a different app, on purpose,
+from `agents/dashboard.py` above (that one is for the mechanical
+scalper/pattern presets; this one is the continuous "second brain"
+monitor and gets its own full UI):
+
+```bash
+python agents/intel_dashboard.py --password mysecret
+# then open  http://localhost:8090  in your browser
+```
+
+Different port (8090 vs 8080), different login, different pid/log
+files (`intel_<symbol>.*` vs `<preset>.*`) — the two run side by side
+without touching each other. The intel dashboard has a card per symbol
+(BTC/ETH/SOL/XRP) with its own Start/Stop and `reason`/`demo-trade`
+toggles, plus a price/demo-equity timeline sparkline (from a rolling
+`market_intel_<symbol>_history.jsonl`, not just the latest snapshot) and
+a full alert-history log per symbol.
 
 What it actually watches, all real Delta Exchange India public data:
 - **Order book**: bid/ask depth imbalance and the single largest resting
