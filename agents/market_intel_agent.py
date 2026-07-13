@@ -52,9 +52,35 @@ Usage:
     python agents/market_intel_agent.py --symbol BTCUSD --reason
     # paid, higher-quality alternative, needs your own key:
     ANTHROPIC_API_KEY=sk-... python agents/market_intel_agent.py --symbol BTCUSD --reason --llm-backend anthropic
+    # DEMO TRADING (paper only -- see below):
+    python agents/market_intel_agent.py --symbol BTCUSD --reason --demo-trade
 
 Writes each snapshot (and, with --reason, the LLM synthesis) to
 agents/logs/market_intel_<symbol>.json, which the dashboard reads.
+
+── DEMO TRADING (--demo-trade) ──────────────────────────────────────────
+This is the ONE place this file touches money at all, and it is a hard,
+permanent restriction, not a default that can be switched: --demo-trade
+ONLY ever uses delta_scalper.paper.PaperBroker (a local simulator against
+live prices). This file contains no code path to delta_scalper.bot or any
+authenticated order-placement call, on purpose -- there is no flag, env
+var, or config value that makes this file place a real order. That is a
+structural fact about what functions this module calls, not a runtime
+check that could be bypassed.
+
+Why paper-only, permanently, here specifically: every OTHER strategy in
+this repo earned real-money eligibility (still capped at 2% risk/trade by
+delta_scalper/config.py) by being walk-forward backtested with a measured
+win rate and profit factor across years of history. An LLM's bias call has
+none of that -- it cannot be backtested the way a candle rule can, so
+there is no evidence base to size real risk against. --demo-trade exists
+to let you WATCH that evidence accumulate: each cycle, if the LLM says
+worth_a_look=true with medium/high confidence, it opens a small simulated
+position (1% risk, ATR-based stop, fixed 2R target, 24h max hold) under
+its own paper account and equity curve, visible in the dashboard exactly
+like the other presets. Once you've watched it trade for a while and have
+an actual track record, that's the informed way to decide whether it ever
+deserves real capital -- a decision this file will not make for you.
 """
 import argparse
 import json
@@ -72,6 +98,7 @@ import pandas as pd  # noqa: E402
 
 from delta_scalper.config import Config  # noqa: E402
 from delta_scalper.delta_client import DeltaClient  # noqa: E402
+from delta_scalper.paper import PaperBroker  # noqa: E402
 from delta_scalper import orderflow  # noqa: E402
 
 log = logging.getLogger("market_intel")
@@ -123,7 +150,7 @@ def gather_snapshot(client, symbol, timeframe="15m", candle_bars=300):
     candles = candles.sort_values("time").reset_index(drop=True)
     snap = orderflow.build_snapshot(symbol, ticker, ob, trades, candles,
                                     CONTRACT_VALUE.get(symbol, 1))
-    return snap
+    return snap, candles
 
 
 def snapshot_to_dict(snap, news):
@@ -167,6 +194,71 @@ def rule_based_alerts(d):
         if n["flagged"]:
             alerts.append(f"News flag [{'/'.join(n['matched'])}]: {n['title']}")
     return alerts
+
+
+# ───────────────────────── demo trading (PAPER ONLY — see module docstring) ─────
+
+DEMO_RISK_PCT = 0.01       # 1% of the demo account per trade, not adjustable via CLI on purpose
+DEMO_MAX_LEVERAGE = 10
+DEMO_R_MULT = 2.0          # fixed take-profit, in units of the stop distance
+DEMO_STOP_ATR = 1.5
+DEMO_MAX_HOLD_S = 24 * 3600
+
+
+def _atr(candles, n=14):
+    h, l, c = candles.high.values, candles.low.values, candles.close.values
+    tr = pd.concat([pd.Series(h - l), (pd.Series(h) - pd.Series(c).shift()).abs(),
+                    (pd.Series(l) - pd.Series(c).shift()).abs()], axis=1).max(axis=1)
+    return float(tr.ewm(alpha=1 / n, adjust=False).mean().iloc[-1])
+
+
+def demo_broker(symbol):
+    """A PaperBroker with its own isolated state file/equity, separate from
+    every other preset. Config.live is never set here and no code in this
+    file calls anything but PaperBroker — see the module docstring."""
+    cfg = Config()
+    cfg.symbols = (symbol,)
+    cfg.strategy = "intel_demo"
+    cfg.state_file = f"scalper_state_intel_demo_{symbol}.json"
+    cfg.risk_per_trade = DEMO_RISK_PCT
+    cfg.max_leverage = DEMO_MAX_LEVERAGE
+    return PaperBroker(cfg), cfg
+
+
+def demo_trade_step(broker, cfg, symbol, mark_price, candles, llm):
+    """One cycle of demo-trade management: manage any open paper position
+    against the live price, then — only if flat — consider a new one from
+    the LLM's read. No-op (returns immediately) if llm is None/failed."""
+    broker.check_pending(mark_price)
+    pnl = broker.check_exit(mark_price)
+    if pnl is not None:
+        log.info("[DEMO] %s position closed, pnl=%.4f, equity=%.2f", symbol, pnl, broker.equity)
+
+    if broker.position is not None or broker.account.pending is not None:
+        return  # already in a demo trade, don't stack another
+    if not llm or llm.get("bias") not in ("bullish", "bearish"):
+        return
+    if not llm.get("worth_a_look") or llm.get("confidence") not in ("medium", "high"):
+        return
+
+    d = 1 if llm["bias"] == "bullish" else -1
+    atr = _atr(candles)
+    if atr <= 0:
+        return
+    stop_dist = DEMO_STOP_ATR * atr
+    stop = mark_price - d * stop_dist
+    target = mark_price + d * stop_dist * DEMO_R_MULT
+    notional = min(broker.equity * cfg.risk_per_trade / (stop_dist / mark_price),
+                   broker.equity * cfg.max_leverage)
+    broker.open_position(
+        symbol, "buy" if d == 1 else "sell", notional, mark_price, stop, target,
+        DEMO_MAX_HOLD_S, context={"setup": "intel_demo_llm", "level": None,
+                                  "wick_ratio": None, "sweep_depth_atr": None,
+                                  "vol_ratio": None, "trend_align": d,
+                                  "stop_pct": round(stop_dist / mark_price * 100, 3)},
+    )
+    log.info("[DEMO] opened %s %s on LLM bias=%s confidence=%s",
+             symbol, "LONG" if d == 1 else "SHORT", llm["bias"], llm["confidence"])
 
 
 def _reasoning_prompt(d, alerts):
@@ -273,7 +365,13 @@ def main():
     ap.add_argument("--llm-model", default=None,
                     help="model name for the chosen backend (default: llama3.2 for ollama, "
                          "claude-sonnet-5 for anthropic)")
+    ap.add_argument("--demo-trade", action="store_true",
+                    help="PAPER ONLY (see module docstring): open small simulated positions "
+                         "from the LLM's bias, so you can watch a real track record build. "
+                         "Implies --reason. Never places a real order, no matter what.")
     args = ap.parse_args()
+    if args.demo_trade:
+        args.reason = True
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     os.makedirs(LOGS, exist_ok=True)
@@ -281,11 +379,17 @@ def main():
 
     cfg = Config()
     client = DeltaClient(cfg.base_url)
-    log.info("Market Intelligence Agent starting: %s %s interval=%ss reason=%s backend=%s",
-             args.symbol, args.timeframe, args.interval, args.reason, args.llm_backend)
+    log.info("Market Intelligence Agent starting: %s %s interval=%ss reason=%s backend=%s demo_trade=%s",
+             args.symbol, args.timeframe, args.interval, args.reason, args.llm_backend, args.demo_trade)
     if not args.reason:
         log.info("Running rule-based only (pass --reason for an LLM synthesis on top; "
                  "default backend is Ollama, free and local)")
+    demo, demo_cfg = (demo_broker(args.symbol) if args.demo_trade else (None, None))
+    if args.demo_trade:
+        log.info("[DEMO] paper trading ON for %s — isolated account, starts at $%.2f, "
+                 "state file scalper_state_intel_demo_%s_paper.json. This NEVER touches "
+                 "real money; see the module docstring.",
+                 args.symbol, demo.equity, args.symbol)
 
     news_cache, news_fetched_at = [], 0
     while True:
@@ -293,7 +397,7 @@ def main():
             if time.time() - news_fetched_at > 900:  # refresh news every 15 min, not every loop
                 news_cache = fetch_news()
                 news_fetched_at = time.time()
-            snap = gather_snapshot(client, args.symbol, args.timeframe)
+            snap, candles = gather_snapshot(client, args.symbol, args.timeframe)
             d = snapshot_to_dict(snap, news_cache)
             alerts = rule_based_alerts(d)
             d["alerts"] = alerts
@@ -306,6 +410,10 @@ def main():
                 d["llm"] = llm_reasoning(d, alerts, backend=args.llm_backend, model=args.llm_model)
                 if d["llm"]:
                     log.info("LLM read: %s", d["llm"].get("read"))
+            if args.demo_trade:
+                demo_trade_step(demo, demo_cfg, args.symbol, snap.mark_price, candles, d.get("llm"))
+                d["demo_equity"] = demo.equity
+                d["demo_position"] = demo.account.position
             with open(out_path, "w") as f:
                 json.dump(d, f, indent=2, default=str)
         except KeyboardInterrupt:
