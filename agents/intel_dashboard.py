@@ -36,6 +36,11 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Exceptions that just mean "the browser closed/canceled the request before
+# we finished writing the response" — a tab refresh, navigation, or an
+# overlapping poll. Harmless and extremely common; not worth a traceback.
+CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, TimeoutError)
 from urllib.parse import urlparse, parse_qs
 
 AGENTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -358,9 +363,10 @@ class Handler(BaseHTTPRequestHandler):
             tf = (q.get("timeframe") or ["15m"])[0]
             limit = int((q.get("limit") or [200])[0])
             try:
-                return self._json(fetch_candles(symbol, tf, limit))
+                data = fetch_candles(symbol, tf, limit)
             except Exception as e:
                 return self._json({"error": str(e)}, 502)
+            return self._json(data)
         if u.path == "/api/testnet/status":
             return self._json(testnet_broker_status())
         if u.path == "/api/myip":
@@ -723,7 +729,14 @@ def main():
         print("refusing to bind beyond localhost without --password")
         sys.exit(1)
     os.makedirs(LOGS, exist_ok=True)
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+
+    class Server(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            if sys.exc_info()[0] in CLIENT_GONE:
+                return  # client disconnected mid-response; nothing to act on
+            super().handle_error(request, client_address)
+
+    srv = Server((args.host, args.port), Handler)
     where = f"http://{'localhost' if args.host == '127.0.0.1' else args.host}:{args.port}"
     print(f"Market Intelligence dashboard running -> {where}"
           + ("  (login required)" if PASSWORD else ""))
