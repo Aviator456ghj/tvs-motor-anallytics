@@ -32,3 +32,10 @@ def bollinger_bands(close: pd.Series, period: int = 20, dev: float = 2.0):
     mid = close.rolling(period).mean()
     sd = close.rolling(period).std()
     return mid + dev * sd, mid, mid - dev * sd
+
+
+def macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    """(macd_line, signal_line, histogram)."""
+    line = ema(close, fast) - ema(close, slow)
+    sig = ema(line, signal)
+    return line, sig, line - sig

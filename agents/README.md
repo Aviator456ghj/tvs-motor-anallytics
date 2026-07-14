@@ -235,6 +235,51 @@ enough for sustained 24/7 use). If you can't pay for API access, Ollama is
 the right default — you still get the entire whale/order-book/regime/news
 monitor either way; only this one synthesis layer changes.
 
+## AI Trading Desk — a multi-agent decision engine, standalone and free
+
+`trading_desk.py` replicates a reference project (a user-provided
+Claude Code configuration: markdown subagents + slash commands, no
+standalone code). That architecture can't run without a paid Claude
+plan or API credits — the "agents" in it ARE Claude Code's own subagent
+mechanism, not a swappable LLM call. This is the real alternative: a
+genuine Python program, using Ollama (free, local) by default, against
+real Delta Exchange India data:
+
+```bash
+python agents/trading_desk.py --symbol BTCUSD
+```
+
+It runs the same six-stage pipeline as the reference — data acquisition
+→ regime/feature engine → a 6-role multi-agent reasoning panel
+(technical/sentiment/macro/quant-regime/portfolio/risk, each a real LLM
+call) → CIO synthesis → scenario analysis (A/B/C) → a final BUY/SELL/HOLD
+decision with a full trade plan (entry/stop/target/size/R:R) — and saves
+a self-contained HTML report to `reports/trading_desk/`. The regime/
+feature numbers themselves are computed deterministically in code (not
+asked of an LLM — a small local model isn't reliable at consistent
+arithmetic); only the judgment layer on top (stance, thesis, scenarios)
+comes from the LLM.
+
+If you've connected testnet keys via `intel_dashboard.py`'s Broker panel,
+it sizes the suggested trade plan against your real (practice-money)
+balance instead of a $10,000 guess — same read-only check, no order-
+placement code anywhere in this file.
+
+```bash
+# free (default): needs `ollama serve` running + `ollama pull llama3.2`
+python agents/trading_desk.py --symbol BTCUSD --llm-backend ollama
+
+# paid alternative: your own Anthropic key, better quality
+ANTHROPIC_API_KEY=sk-... python agents/trading_desk.py --symbol BTCUSD --llm-backend anthropic
+```
+
+**Honestly:** this makes 6-7 LLM calls per run, so a local model can take
+a few minutes end to end. Quality follows the same rule as everywhere
+else in this repo — Ollama's small models are a rougher first pass,
+double-check anything material. It never executes a trade; it only
+analyzes and writes a report, same as the reference project's own stated
+purpose.
+
 ## Honest expectations
 
 A backtest's +18,552% is not a forecast. The equity curves behind these

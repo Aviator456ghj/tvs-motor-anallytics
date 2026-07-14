@@ -6,3 +6,6 @@ scalper.log
 trade_journal.csv
 bot_stdout.log
 agents/logs/
+reports/trading_desk/
+agents/.delta_keys.json
+agents/.delta_testnet_keys.json
