@@ -17,6 +17,7 @@ import pandas as pd
 
 from .config import Config
 from .delta_client import DeltaClient
+from .indicators import atr as compute_atr
 from .paper import PaperBroker
 from .risk import RiskManager
 from .choch import ChochFibStrategy
@@ -26,6 +27,7 @@ from .liquidity_fakeout import LiquidityFakeoutStrategy
 from .riley import RileyReversalStrategy, last_confirmed_swings as riley_last_swings
 from .strategy import TrendPullbackStrategy
 from .structure import MarketStructureStrategy
+from .tf_breakout import TFBreakoutStrategy
 
 log = logging.getLogger("delta.bot")
 
@@ -37,6 +39,7 @@ STRATEGIES = {
     "riley": RileyReversalStrategy,
     "orderblock": OrderBlockStrategy,
     "liqfakeout": LiquidityFakeoutStrategy,
+    "tfbreakout": TFBreakoutStrategy,
 }
 
 
@@ -55,6 +58,7 @@ class ScalpingBot:
         self.last_signal_bar: dict[str, int] = {}
         self.live_entry_deadline: dict[str, float] = {}
         self._trail_bar: dict[str, int] = {}
+        self._tf_trail_extreme: dict[str, tuple[float, float]] = {}  # symbol -> (opened_at, extreme)
 
     # ---------- data ----------
 
@@ -123,6 +127,8 @@ class ScalpingBot:
         elif self.cfg.strategy == "orderblock" or (
                 self.cfg.strategy == "riley" and self.cfg.riley_exit_mode == "trail"):
             hold_bars = 2000  # trailing rides run for days; don't time-cut them
+        elif self.cfg.strategy == "tfbreakout":
+            hold_bars = self.cfg.tf_max_hold_bars
         else:
             hold_bars = self.cfg.max_hold_bars
         max_hold_s = hold_bars * self.cfg.timeframe_minutes * 60
@@ -191,6 +197,9 @@ class ScalpingBot:
                 elif pos and self.cfg.strategy == "riley" and \
                         self.cfg.riley_exit_mode == "trail":
                     self._riley_trail_stop(symbol, pos)
+                elif pos and self.cfg.strategy == "tfbreakout" and \
+                        self.cfg.tf_exit_mode == "trail":
+                    self._tfbreakout_trail_stop(symbol, pos)
         else:
             # cancel a resting limit entry that outlived its validity window
             deadline = self.live_entry_deadline.get(symbol)
@@ -206,9 +215,12 @@ class ScalpingBot:
             size = int(positions.get("size", 0) or 0)
             if size != 0:
                 entry_ts = self.last_signal_bar.get(symbol, 0)
-                hold_bars = self.cfg.choch_max_hold_bars \
-                    if self.cfg.strategy in ("choch", "orderblock") \
-                    else self.cfg.max_hold_bars
+                if self.cfg.strategy in ("choch", "orderblock"):
+                    hold_bars = self.cfg.choch_max_hold_bars
+                elif self.cfg.strategy == "tfbreakout":
+                    hold_bars = self.cfg.tf_max_hold_bars
+                else:
+                    hold_bars = self.cfg.max_hold_bars
                 max_hold_s = hold_bars * self.cfg.timeframe_minutes * 60
                 if entry_ts and time.time() - entry_ts > max_hold_s:
                     side = "sell" if size > 0 else "buy"
@@ -259,6 +271,35 @@ class ScalpingBot:
         if cand is not None:
             self.paper.tighten_stop(cand)
 
+    def _tfbreakout_trail_stop(self, symbol: str, pos):
+        """ATR-ratcheted trailing stop: tighten toward the extreme
+        favorable price reached since entry, using each new bar's own
+        live ATR (recomputed fresh each call, not frozen at entry —
+        matches the source strategy). Never loosens. Evaluated once per
+        new closed bar."""
+        candles = self.fetch_closed_candles(symbol)
+        if candles.empty:
+            return
+        newest = int(candles["time"].iloc[-1])
+        if self._trail_bar.get(symbol) == newest:
+            return
+        self._trail_bar[symbol] = newest
+        atr_now = float(compute_atr(candles, 14).iloc[-1])
+        if math.isnan(atr_now) or atr_now <= 0:
+            return
+        high = float(candles["high"].iloc[-1])
+        low = float(candles["low"].iloc[-1])
+        tracked = self._tf_trail_extreme.get(symbol)
+        extreme = tracked[1] if tracked and tracked[0] == pos.opened_at else pos.entry_price
+        if pos.side == "buy":
+            extreme = max(extreme, high)
+            new_stop = extreme - self.cfg.tf_exit_mult * atr_now
+        else:
+            extreme = min(extreme, low)
+            new_stop = extreme + self.cfg.tf_exit_mult * atr_now
+        self._tf_trail_extreme[symbol] = (pos.opened_at, extreme)
+        self.paper.tighten_stop(new_stop)
+
     # ---------- main loop ----------
 
     def run_forever(self):
@@ -271,6 +312,10 @@ class ScalpingBot:
             log.warning("%s strategy: positive but small-sample backtest — "
                         "validate in paper mode before any live size",
                         cfg.strategy)
+        if cfg.strategy == "tfbreakout":
+            log.warning("tfbreakout strategy: did NOT clear Sharpe>1 out-of-sample in "
+                        "backtest (see reports/tf_breakout_jesse_replication_report.md) — "
+                        "paper mode only, judge it by its own live journal")
         last_bar_seen: dict[str, int] = {}
         while True:
             try:

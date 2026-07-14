@@ -127,6 +127,71 @@ PRESETS = {
         liq_swing_k=3, liq_wick_atr=0.1, liq_reject_frac=0.0, liq_vol_mult=1.5,
         liq_r_mult=1.0, liq_buf_atr=0.15, risk_per_trade=0.01, max_leverage=10,
     ),
+    # ── Trend-following BB+EMA breakout — replicated from a Claude+Jesse- ──
+    # MCP autonomous strategy video (see
+    # reports/tf_breakout_jesse_replication_report.md for the full write-up).
+    # HONEST RESULT: neither exit mode cleared the video's own Sharpe>1
+    # target out-of-sample on real Delta Exchange data (trail: -0.35, fixed:
+    # 0.90 — just short) even though BOTH passed an entry-rule statistical
+    # significance test (p<0.01) and Monte Carlo (worst-5% still positive)
+    # on the full period with no train/test split. Included anyway, on
+    # request, so you can watch the live paper journal build a real track
+    # record rather than trust the full-period backtest number. Sizing:
+    # risk_per_trade=3% (as specified in the source prompt) capped at
+    # max_leverage=0.10 (10% of equity notional) — that 10% cap is what
+    # actually bound in every backtest run (risk-based sizing alone would
+    # have wanted 2-3x equity per trade at this stop distance), so this
+    # reproduces the exact sizing that was validated, not a larger one.
+    "btc-tfbreakout-trail": dict(
+        _desc="TF Breakout (BB+EMA), BTCUSD 1h, ATR-trailing exit — 3% risk/10% cap. "
+              "Full-period Sharpe 1.14 (p=0.003 significant) but OOS Sharpe -0.35 — "
+              "did NOT hold up walk-forward. Paper only.",
+        symbols=("BTCUSD",), strategy="tfbreakout", timeframe_minutes=60,
+        tf_bb_period=20, tf_bb_dev=2.5, tf_ema_period=200, tf_stop_mult=2.0,
+        tf_exit_mult=3.0, tf_exit_mode="trail",
+        risk_per_trade=0.03, max_leverage=0.10,
+    ),
+    "eth-tfbreakout-trail": dict(
+        _desc="TF Breakout (BB+EMA), ETHUSD 1h, ATR-trailing exit — same config as BTC "
+              "(combined-optimized). Full-period Sharpe 1.14, OOS Sharpe -0.35. Paper only.",
+        symbols=("ETHUSD",), strategy="tfbreakout", timeframe_minutes=60,
+        tf_bb_period=20, tf_bb_dev=2.5, tf_ema_period=200, tf_stop_mult=2.0,
+        tf_exit_mult=3.0, tf_exit_mode="trail",
+        risk_per_trade=0.03, max_leverage=0.10,
+    ),
+    "sol-tfbreakout-trail": dict(
+        _desc="TF Breakout (BB+EMA), SOLUSD 1h, ATR-trailing exit — same config as BTC "
+              "(combined-optimized). Full-period Sharpe 1.14, OOS Sharpe -0.35. Paper only.",
+        symbols=("SOLUSD",), strategy="tfbreakout", timeframe_minutes=60,
+        tf_bb_period=20, tf_bb_dev=2.5, tf_ema_period=200, tf_stop_mult=2.0,
+        tf_exit_mult=3.0, tf_exit_mode="trail",
+        risk_per_trade=0.03, max_leverage=0.10,
+    ),
+    "btc-tfbreakout-atr": dict(
+        _desc="TF Breakout (BB+EMA), BTCUSD 1h, ATR-fixed stop/target — 3% risk/10% cap. "
+              "Full-period Sharpe 1.43 (p<0.001 significant), OOS Sharpe 0.90 — close but "
+              "under the >1 target. The stronger of the two variants. Paper only.",
+        symbols=("BTCUSD",), strategy="tfbreakout", timeframe_minutes=60,
+        tf_bb_period=30, tf_bb_dev=2.5, tf_ema_period=100, tf_stop_mult=1.5,
+        tf_exit_mult=2.0, tf_exit_mode="fixed",
+        risk_per_trade=0.03, max_leverage=0.10,
+    ),
+    "eth-tfbreakout-atr": dict(
+        _desc="TF Breakout (BB+EMA), ETHUSD 1h, ATR-fixed stop/target — same config as BTC "
+              "(combined-optimized). Full-period Sharpe 1.43, OOS Sharpe 0.90. Paper only.",
+        symbols=("ETHUSD",), strategy="tfbreakout", timeframe_minutes=60,
+        tf_bb_period=30, tf_bb_dev=2.5, tf_ema_period=100, tf_stop_mult=1.5,
+        tf_exit_mult=2.0, tf_exit_mode="fixed",
+        risk_per_trade=0.03, max_leverage=0.10,
+    ),
+    "sol-tfbreakout-atr": dict(
+        _desc="TF Breakout (BB+EMA), SOLUSD 1h, ATR-fixed stop/target — same config as BTC "
+              "(combined-optimized). Full-period Sharpe 1.43, OOS Sharpe 0.90. Paper only.",
+        symbols=("SOLUSD",), strategy="tfbreakout", timeframe_minutes=60,
+        tf_bb_period=30, tf_bb_dev=2.5, tf_ema_period=100, tf_stop_mult=1.5,
+        tf_exit_mult=2.0, tf_exit_mode="fixed",
+        risk_per_trade=0.03, max_leverage=0.10,
+    ),
     # NOTE: the ETH "Swing Catcher k=8, stop buffer 0.0001xATR, 15% risk"
     # screenshot is deliberately NOT a preset. A 0.0001xATR buffer puts the
     # stop essentially AT the swing price, which makes the risk-based sizing
@@ -183,9 +248,14 @@ def main():
     cfg, desc = build_config(args.preset, args.risk)
     print(f"\npreset: {args.preset}\n  {desc}\n")
     if not cfg.live and cfg.risk_per_trade > 0.02:
-        print("  MODE: PAPER (simulated). This preset's sizing produced a "
-              "-55% to -90% class max drawdown in backtest — it is blocked "
-              "from live trading; use --risk 2 or lower to trade it live.\n")
+        if cfg.strategy == "tfbreakout":
+            print("  MODE: PAPER (simulated). This preset's risk_per_trade is above the "
+                  "2% live-mode cap; it is blocked from live trading — use --risk 2 or "
+                  "lower to trade it live.\n")
+        else:
+            print("  MODE: PAPER (simulated). This preset's sizing produced a "
+                  "-55% to -90% class max drawdown in backtest — it is blocked "
+                  "from live trading; use --risk 2 or lower to trade it live.\n")
 
     from delta_scalper.bot import ScalpingBot
     ScalpingBot(cfg).run_forever()

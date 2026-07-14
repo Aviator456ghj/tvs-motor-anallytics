@@ -75,6 +75,30 @@ every trade just hits the 200x leverage cap, so "15% risk" doesn't
 describe what it actually does (max-leverage sizing on a PF 1.08 edge,
 -86.6% max DD). Ask if you want it added anyway.
 
+Also available: `btc/eth/sol/xrp-liqfakeout` (Liquidity Sweep Fakeout,
+1h, genuinely walk-forward-validated, 1% risk — see
+`reports/liquidity_fakeout_report.md`).
+
+### TF Breakout presets — included despite not fully validating
+
+`btc/eth/sol-tfbreakout-trail` and `btc/eth/sol-tfbreakout-atr` replicate
+a strategy from a user-provided video of Claude Code (via an MCP bridge
+to the Jesse algo-trading framework) autonomously developing a Bollinger
+Band + EMA trend-following breakout, in two exit flavors. Full write-up
+and methodology: `reports/tf_breakout_jesse_replication_report.md`.
+
+**Read this before running them:** both variants pass an entry-rule
+statistical significance test (p<0.01) and Monte Carlo stress test on
+the full backtest period with no train/test split — exactly what the
+source video's own methodology would call "validated." Add a walk-forward
+out-of-sample split on top (this repo's standing practice for every other
+preset) and neither clears the video's own Sharpe>1 target: the trailing
+exit collapses to Sharpe -0.35 out-of-sample, the fixed exit lands at
+0.90 — close, but under. They're included anyway, at the user's request,
+so their live paper journal (not the full-period backtest number) can
+build a real track record. Judge them the same way this repo's README
+already asks you to judge everything: by `trade_journal.csv`, live.
+
 ## Paper vs live — read this
 
 - **Paper (default):** simulated fills against real live prices. All five
@@ -105,10 +129,20 @@ TradingView charts (with alerts) if you want the chart experience too.
 
 ## Market Intelligence Agent — a different kind of agent, on purpose
 
-Every preset above is a mechanical rule, walk-forward backtested with a
-measured win rate and profit factor. `market_intel_agent.py` is not that —
-it's a real-time **monitor**, built to answer "find the big money moves,
-market conditions, and order books, with self-thinking" directly:
+Every preset above, including the new TF Breakout ones, is a mechanical
+rule, backtested with a measured win rate and profit factor, run from
+`run_agent.py` and shown in `dashboard.py`. `market_intel_agent.py`/
+`intel_dashboard.py` is deliberately **not** that — you asked earlier
+for it to be kept as its own separate app precisely so it wouldn't turn
+into another preset runner. It's a real-time **monitor**, built to
+answer "find the big money moves, market conditions, and order books,
+with self-thinking" directly, and its own demo-trade (if you turn it on)
+is driven by the LLM's read, not a fixed rule — so the TF Breakout
+strategies don't get a copy inside it. What it DOES give you for BTC/ETH/
+SOL while the TF Breakout presets run in the main dashboard: live order-
+book imbalance, whale prints, funding/OI, and volatility/trend regime for
+those same symbols, right alongside them — open both dashboards together
+(ports 8080 and 8090) for the full picture.
 
 ```bash
 python agents/market_intel_agent.py --symbol BTCUSD

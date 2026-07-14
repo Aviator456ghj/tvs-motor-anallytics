@@ -162,6 +162,26 @@ class Config:
     liq_r_mult: float = 1.0          # fixed take-profit, in R
     liq_buf_atr: float = 0.15        # stop buffer beyond the sweep extreme (x ATR)
 
+    # --- trend-following BB+EMA breakout (DELTA_STRATEGY=tfbreakout, 1h) ---
+    # Replicated from a Claude+Jesse-MCP autonomous strategy-development
+    # video: Bollinger Band breakout filtered by an EMA trend, two exit
+    # modes sharing this one entry rule. See
+    # reports/tf_breakout_jesse_replication_report.md for the full
+    # validation on real Delta Exchange India data (~2.3 years BTC/ETH/SOL,
+    # entry-rule significance test, hyperparameter grid search, Monte
+    # Carlo). HONEST RESULT: neither exit mode cleared the video's own
+    # Sharpe>1 target out-of-sample (trail: -0.35, fixed: 0.90) even though
+    # both passed the significance test and Monte Carlo on the full period
+    # — a real demonstration of why walk-forward matters. Paper-only;
+    # watch the live journal, don't trust the full-period backtest number.
+    tf_bb_period: int = 20
+    tf_bb_dev: float = 2.5
+    tf_ema_period: int = 150         # 200 for the trail variant, 100 for fixed (set per-preset)
+    tf_stop_mult: float = 1.5        # initial stop distance (x ATR)
+    tf_exit_mult: float = 2.0        # target_mult (fixed mode) / trail_mult (trail mode), x ATR
+    tf_exit_mode: str = "fixed"      # "fixed" (ATR stop+target) | "trail" (ATR ratchet, ride exit)
+    tf_max_hold_bars: int = 720      # 30 days at 1h -- trend trades can run long
+
     # --- position sizing mode ---
     # "risk" (default): risk_per_trade% of equity, sized off the stop distance
     # "compound":       stake the FULL balance x compound_leverage every trade
