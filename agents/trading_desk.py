@@ -64,6 +64,7 @@ import pandas as pd  # noqa: E402
 
 from delta_scalper.config import Config              # noqa: E402
 from delta_scalper.delta_client import DeltaClient   # noqa: E402
+from delta_scalper.paper import PaperBroker          # noqa: E402
 from delta_scalper import orderflow                  # noqa: E402
 from delta_scalper.indicators import ema, rsi, atr, macd  # noqa: E402
 
@@ -630,6 +631,89 @@ def run(symbol, backend="ollama", model=None, equity_override=None):
                 report_path=report_path)
 
 
+# ═══════════════════════════ the "body" — paper execution (--loop) ═══════════════════════════
+# A single run() call is the brain only: it thinks and writes a report, nothing more. --loop
+# gives it paper hands: when the CIO's decision is BUY/SELL, it actually opens a simulated
+# position at the exact plan (entry/stop/target/size) and manages it against live prices, same
+# safety tier as market_intel_agent.py's --demo-trade. This NEVER places a real order — no live-
+# broker or order-placement call exists anywhere in this file. Trades land in the shared
+# trade_journal.csv (strategy="trading_desk") the same way every other paper-traded strategy in
+# this repo does, so they're inspectable with the same tools.
+
+def desk_broker(symbol, start_equity=None):
+    cfg = Config()
+    cfg.symbols = (symbol,)
+    cfg.strategy = "trading_desk"
+    cfg.state_file = f"scalper_state_trading_desk_{symbol}.json"
+    if start_equity is not None:
+        cfg.paper_start_equity = start_equity
+    return PaperBroker(cfg)
+
+
+def desk_trade_step(broker, symbol, mark_price, final_plan):
+    """Manage any open paper position against the live price; if flat and
+    a final_plan exists (CIO decision != HOLD), open it at the exact
+    entry/stop/target/size the desk computed. Returns True if a new
+    position was opened this call."""
+    broker.check_pending(mark_price)
+    pnl = broker.check_exit(mark_price)
+    if pnl is not None:
+        log.info("[DESK] %s position closed, pnl=%.4f, equity=%.2f", symbol, pnl, broker.equity)
+    if broker.position is not None or broker.account.pending is not None:
+        return False
+    if final_plan is None:
+        return False
+    d = 1 if final_plan["side"] == "long" else -1
+    stop_pct = abs(final_plan["entry"] - final_plan["stop"]) / final_plan["entry"] * 100
+    broker.open_position(
+        symbol, "buy" if d == 1 else "sell", final_plan["notional"],
+        final_plan["entry"], final_plan["stop"], final_plan["target"],
+        max_hold_seconds=7 * 86400,
+        context={"setup": "trading_desk", "level": None, "wick_ratio": None,
+                 "sweep_depth_atr": None, "vol_ratio": None, "trend_align": d,
+                 "stop_pct": round(stop_pct, 3)},
+    )
+    log.info("[DESK] opened %s %s @ %.2f (composite score %.1f, size %.2f%%)",
+             symbol, final_plan["side"].upper(), final_plan["entry"],
+             final_plan.get("_composite_score", 0), final_plan["size_pct"])
+    return True
+
+
+def run_loop(symbol, backend, model, equity_override, interval, poll_seconds=30):
+    """The body's main loop: cheap price polling every poll_seconds to
+    manage any open position, and the full (expensive, LLM-driven)
+    analysis pipeline every interval seconds while flat, to decide
+    whether to open a new one."""
+    broker = desk_broker(symbol, start_equity=equity_override)
+    client = DeltaClient(Config().base_url)
+    log.info("[DESK] paper trading ON for %s — starts at $%.2f, state file "
+             "scalper_state_trading_desk_%s_paper.json. This NEVER touches real money.",
+             symbol, broker.equity, symbol)
+    last_pipeline_run = 0.0
+    while True:
+        try:
+            ticker = client.get_ticker(symbol)
+            mark = float(ticker.get("mark_price", 0) or 0)
+            if mark:
+                desk_trade_step(broker, symbol, mark, None)
+            now = time.time()
+            flat = broker.position is None and broker.account.pending is None
+            if flat and now - last_pipeline_run >= interval:
+                log.info("[DESK] running full analysis pipeline...")
+                result = run(symbol, backend=backend, model=model, equity_override=broker.equity)
+                last_pipeline_run = time.time()
+                plan = result["final_plan"]
+                if plan:
+                    plan["_composite_score"] = result["cio"]["composite_score"]
+                desk_trade_step(broker, symbol, result["features"]["mark_price"], plan)
+        except KeyboardInterrupt:
+            log.info("[DESK] stopped by user")
+            return
+        except Exception:
+            log.exception("[DESK] loop error — continuing")
+        time.sleep(poll_seconds)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -641,17 +725,29 @@ def main():
                     help="model name for the chosen backend (default: llama3.2 for ollama, "
                          "claude-sonnet-5 for anthropic)")
     ap.add_argument("--equity", type=float, default=None,
-                    help="account equity for position sizing (default: your connected testnet "
-                         "balance if available, else $10,000)")
+                    help="starting/account equity for position sizing (default: your connected "
+                         "testnet balance if available, else $10,000)")
+    ap.add_argument("--loop", action="store_true",
+                    help="give the desk a (paper) body: run forever, actually opening/managing "
+                         "simulated positions from the CIO's decision — real behavior, zero real "
+                         "money. Without this flag, it's brain-only: one analysis, one report, exit.")
+    ap.add_argument("--interval", type=int, default=1800,
+                    help="[--loop only] seconds between full analysis pipeline runs while flat "
+                         "(default 1800 = 30min; a single run already takes a few minutes with a "
+                         "local model, don't set this too low)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log.info("AI Trading Desk: %s backend=%s model=%s", args.symbol, args.llm_backend,
-             args.llm_model or "(default)")
+    log.info("AI Trading Desk: %s backend=%s model=%s mode=%s", args.symbol, args.llm_backend,
+             args.llm_model or "(default)", "loop/paper-trading" if args.loop else "single-shot")
     if args.llm_backend == "ollama":
         log.info("Free/local: make sure `ollama serve` is running and you've `ollama pull llama3.2` "
                  "(or pass --llm-model). This makes 6 LLM calls — expect it to take a few minutes on "
                  "a typical machine.")
+
+    if args.loop:
+        run_loop(args.symbol, args.llm_backend, args.llm_model, args.equity, args.interval)
+        return
 
     result = run(args.symbol, backend=args.llm_backend, model=args.llm_model, equity_override=args.equity)
 
