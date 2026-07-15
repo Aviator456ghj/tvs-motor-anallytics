@@ -262,8 +262,7 @@ comes from the LLM.
 
 If you've connected testnet keys via `intel_dashboard.py`'s Broker panel,
 it sizes the suggested trade plan against your real (practice-money)
-balance instead of a $10,000 guess — same read-only check, no order-
-placement code anywhere in this file.
+balance instead of a $10,000 guess.
 
 ```bash
 # free (default): needs `ollama serve` running + `ollama pull llama3.2`
@@ -272,6 +271,37 @@ python agents/trading_desk.py --symbol BTCUSD --llm-backend ollama
 # paid alternative: your own Anthropic key, better quality
 ANTHROPIC_API_KEY=sk-... python agents/trading_desk.py --symbol BTCUSD --llm-backend anthropic
 ```
+
+By itself this is **brain only** — one analysis, one HTML report, exit.
+Nothing acts on the decision. Two flags give it a body:
+
+**`--loop` — paper hands, safe, on by default recommendation:**
+```bash
+python agents/trading_desk.py --symbol BTCUSD --loop
+```
+Runs forever. Polls price every 30s to manage any open (simulated)
+position; every `--interval` (default 30min) while flat, re-runs the
+full analysis and — if the decision is BUY/SELL — actually opens a
+paper position at the exact plan (entry/stop/target/size), same safety
+tier as `market_intel_agent.py`'s `--demo-trade`. Zero real money.
+Trades land in the shared `trade_journal.csv` (`strategy=trading_desk`),
+so win rate/trades/returns build up over time, inspectable the same way
+as every other paper-traded strategy in this repo.
+
+**`--live` — real hands, real money, deliberately the most restricted
+path in this file:**
+```bash
+DELTA_LIVE=1 DELTA_API_KEY=... DELTA_API_SECRET=... python agents/trading_desk.py --symbol BTCUSD --live
+```
+- Single-shot only — **cannot** be combined with `--loop`. No unattended
+  real-money trading from a small local model's judgment, ever; re-run
+  the command each time you want a fresh live decision.
+- Only an **"action"-band decision (composite score ≥70)** is even
+  eligible — a "lean" (45-69) call never reaches real money.
+- Capped at **2% risk per trade** by this repo's one hard safety rail
+  (`Config.validate()`), reused unmodified — not a new or looser cap.
+- Prints the exact plan and requires you to type the literal word `yes`
+  before anything is sent to the exchange. Anything else cancels.
 
 **Honestly:** this makes 6-7 LLM calls per run, so a local model can take
 a few minutes end to end. Quality follows the same rule as everywhere

@@ -50,6 +50,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -714,6 +715,83 @@ def run_loop(symbol, backend, model, equity_override, interval, poll_seconds=30)
         time.sleep(poll_seconds)
 
 
+# ═══════════════════════════ real hands — live execution (--live) ═══════════════════════════
+# The single biggest step up in risk in this file, so it is deliberately the most restricted
+# path here:
+#   - single-shot ONLY, never --loop — no unattended real-money trading from a small local
+#     model's judgment, ever. Re-run the command each time you want a fresh live decision.
+#   - only an "action" band decision (composite score >= 70) is even eligible — a "lean"
+#     (45-69) call never reaches real money, no matter how it's sized.
+#   - reuses this repo's ONE hard safety rail, Config.validate()'s 2% live-risk cap, verbatim —
+#     not reimplemented, not loosened, not bypassed. If the desk's recommended size is above
+#     that, this refuses exactly like every other live path in the repo.
+#   - requires the same DELTA_LIVE=1 + real DELTA_API_KEY/DELTA_API_SECRET every other live
+#     path here already needs — no separate, easier credential path.
+#   - requires you to type the exact word "yes" after seeing the full plan. No flag skips this.
+
+def confirm_live_trade(symbol, final_plan, cio):
+    print(f"\n{'!' * 60}")
+    print(f"LIVE TRADE CONFIRMATION — real money, real order, {symbol}")
+    print(f"{'!' * 60}")
+    print(f"Decision: {cio['decision']}  (composite score {cio['composite_score']}/100, "
+          f"band={cio['band']})")
+    print(f"Side:   {final_plan['side'].upper()}")
+    print(f"Entry:  {final_plan['entry']}")
+    print(f"Stop:   {final_plan['stop']}")
+    print(f"Target: {final_plan['target']}")
+    print(f"R:R:    {final_plan['r_r']}")
+    print(f"Size:   {final_plan['size_pct']}% of equity (${final_plan['notional']:.2f} notional "
+          f"on ${final_plan['equity_basis']:,.2f})")
+    print(f"\nThesis: {cio.get('thesis', '')}")
+    print("\nThis plan came from an LLM's judgment (rougher if you're on Ollama) — verify it "
+          "yourself before confirming; nothing here is financial advice.")
+    print("\nType exactly 'yes' to place this order on Delta Exchange, anything else cancels: ",
+          end="", flush=True)
+    try:
+        answer = input().strip()
+    except EOFError:
+        answer = ""
+    return answer == "yes"
+
+
+def place_live_order(symbol, final_plan, cfg):
+    """Places a REAL order on Delta Exchange India. Only ever called after
+    confirm_live_trade() returns True. Routes through Config.validate()'s
+    existing 2% live-risk cap unmodified — the same rail every other live
+    path in this repo uses, not a new or looser one.
+
+    Config.validate() only enforces its checks WHEN cfg.live is already
+    True — it does not itself require live mode to be on, so that check
+    is repeated explicitly here first. Without it, this function would
+    attempt a real exchange API call even with DELTA_LIVE unset."""
+    if not cfg.live:
+        raise SystemExit("DELTA_LIVE=1 is not set — refusing to place a live order. "
+                         "Set DELTA_LIVE=1 and real DELTA_API_KEY/DELTA_API_SECRET to trade live.")
+    cfg.sizing = "risk"
+    cfg.risk_per_trade = final_plan["size_pct"] / 100.0
+    cfg.validate()  # raises SystemExit if size > 2% or keys are missing
+
+    client = DeltaClient(cfg.base_url, cfg.api_key, cfg.api_secret)
+    p = client.get_product(symbol)
+    contract_value = float(p["contract_value"])
+    tick = float(p["tick_size"])
+    size = max(1, math.floor(final_plan["notional"] / (contract_value * final_plan["entry"])))
+
+    def round_tick(x):
+        return f"{round(x / tick) * tick:.10f}".rstrip("0").rstrip(".")
+
+    side = "buy" if final_plan["side"] == "long" else "sell"
+    res = client.place_order(
+        product_id=p["id"], side=side, size=size, order_type="limit_order",
+        limit_price=round_tick(final_plan["entry"]), time_in_force="gtc",
+        bracket_stop_loss_price=round_tick(final_plan["stop"]),
+        bracket_take_profit_price=round_tick(final_plan["target"]),
+    )
+    log.info("[DESK-LIVE] order placed: %s %s x%d @ %s (bracket SL %s / TP %s)",
+             side, symbol, size, final_plan["entry"], final_plan["stop"], final_plan["target"])
+    return res
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -735,11 +813,25 @@ def main():
                     help="[--loop only] seconds between full analysis pipeline runs while flat "
                          "(default 1800 = 30min; a single run already takes a few minutes with a "
                          "local model, don't set this too low)")
+    ap.add_argument("--live", action="store_true",
+                    help="real hands: if the decision is an 'action'-band BUY/SELL (composite "
+                         "score >=70), show the exact plan and ask you to type 'yes' before "
+                         "placing a REAL order on Delta Exchange. Requires DELTA_LIVE=1 + "
+                         "DELTA_API_KEY/DELTA_API_SECRET, and is capped at 2%% risk by the same "
+                         "hard rail every other live path in this repo uses. Cannot be combined "
+                         "with --loop — live trades are single-shot and human-confirmed, always.")
     args = ap.parse_args()
+
+    if args.live and args.loop:
+        print("--live cannot be combined with --loop: real-money trades in this tool are "
+              "always single-shot and require your explicit confirmation each time, never "
+              "unattended. Run --live by itself whenever you want a fresh live decision.")
+        sys.exit(1)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("AI Trading Desk: %s backend=%s model=%s mode=%s", args.symbol, args.llm_backend,
-             args.llm_model or "(default)", "loop/paper-trading" if args.loop else "single-shot")
+             args.llm_model or "(default)",
+             "loop/paper-trading" if args.loop else ("live" if args.live else "single-shot"))
     if args.llm_backend == "ollama":
         log.info("Free/local: make sure `ollama serve` is running and you've `ollama pull llama3.2` "
                  "(or pass --llm-model). This makes 6 LLM calls — expect it to take a few minutes on "
@@ -764,6 +856,23 @@ def main():
         print("\nNo trade plan — HOLD.")
     print(f"\nFull report: {result['report_path']}")
     print(f"{'='*60}\n")
+
+    if args.live:
+        if not result["final_plan"] or cio["band"] != "action":
+            print(f"--live: not eligible (decision={cio['decision']}, band={cio['band']}) — "
+                  f"only an 'action'-band (score>=70) BUY/SELL ever reaches real money. No "
+                  f"order placed.")
+            return
+        if confirm_live_trade(args.symbol, result["final_plan"], cio):
+            cfg = Config()
+            try:
+                place_live_order(args.symbol, result["final_plan"], cfg)
+                print("Live order placed. Manage it on Delta Exchange directly from here — "
+                      "this tool does not run a live position-management loop.")
+            except SystemExit as e:
+                print(f"Refused: {e}")
+        else:
+            print("Cancelled — no order placed.")
 
 
 if __name__ == "__main__":
