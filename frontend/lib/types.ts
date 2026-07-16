@@ -106,6 +106,7 @@ export interface Booking {
   commission_amount: number;
   discount_amount: number;
   tags: string | null;
+  created_via: string;
   created_at: string;
 }
 
@@ -193,8 +194,10 @@ export interface Notification {
 export interface Coupon {
   id: string;
   code: string;
+  business_id: string | null;
   discount_type: "flat" | "percent";
   discount_value: number;
+  min_order_value: number;
   usage_limit: number | null;
   usage_count: number;
   is_active: boolean;

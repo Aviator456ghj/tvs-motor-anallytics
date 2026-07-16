@@ -36,6 +36,11 @@ class BusinessProfile(Base):
     rating_count: Mapped[int] = mapped_column(Integer, default=0)
     commission_rate: Mapped[float] = mapped_column(Numeric(5, 4), default=0.12)
     subscription_plan: Mapped[SubscriptionPlan] = mapped_column(Enum(SubscriptionPlan), default=SubscriptionPlan.free)
+    cancellation_policy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refund_policy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notify_email_bookings: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_email_payments: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_email_marketing: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     owner = relationship("User", back_populates="business_profile")
@@ -47,6 +52,8 @@ class BusinessProfile(Base):
     category_links = relationship("BusinessCategory", back_populates="business", cascade="all, delete-orphan")
     staff_members = relationship("BusinessStaff", back_populates="business", cascade="all, delete-orphan")
     payouts = relationship("PayoutRecord", back_populates="business", cascade="all, delete-orphan")
+    locations = relationship("BusinessLocation", back_populates="business", cascade="all, delete-orphan")
+    payout_account = relationship("BusinessPayoutAccount", back_populates="business", uselist=False, cascade="all, delete-orphan")
 
 
 class Employee(Base):
@@ -93,3 +100,41 @@ class BusinessDocument(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     business = relationship("BusinessProfile", back_populates="documents")
+
+
+class BusinessLocation(Base):
+    """A studio/service location for the business — Shopify's equivalent of
+    multi-location inventory, adapted to where a services business actually
+    operates from (a studio) or serves (a home-service radius)."""
+
+    __tablename__ = "business_locations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("business_profiles.id"))
+    label: Mapped[str] = mapped_column(String(150), nullable=False)  # e.g. "Main Studio", "Jubilee Hills Branch"
+    address: Mapped[str] = mapped_column(String(500), nullable=False)
+    city: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    service_radius_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    business = relationship("BusinessProfile", back_populates="locations")
+
+
+class BusinessPayoutAccount(Base):
+    """Bank details payouts are sent to — Shopify requires this before a
+    merchant can receive Shopify Payments payouts; same idea here."""
+
+    __tablename__ = "business_payout_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("business_profiles.id"), unique=True)
+    account_holder_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    bank_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_number_last4: Mapped[str] = mapped_column(String(4), nullable=False)
+    ifsc_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    upi_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    business = relationship("BusinessProfile", back_populates="payout_account")

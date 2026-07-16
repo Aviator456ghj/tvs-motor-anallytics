@@ -7,11 +7,11 @@ from sqlalchemy.orm import Session
 from app.core.business_access import require_business_access
 from app.core.database import get_db
 from app.models.booking import Booking
-from app.models.business import BusinessProfile
+from app.models.business import BusinessPayoutAccount, BusinessProfile
 from app.models.engagement import Notification
-from app.models.enums import BookingStatus, BusinessStaffRole, NotificationType, PayoutStatus
-from app.models.payment import PayoutRecord
-from app.schemas.payout import PayoutBalanceOut, PayoutOut, PayoutRequest
+from app.models.enums import BookingStatus, BusinessStaffRole, NotificationType, PaymentType, PayoutStatus
+from app.models.payment import Payment, PayoutRecord
+from app.schemas.payout import PayoutBalanceOut, PayoutOut, PayoutRequest, TransactionOut
 
 router = APIRouter(prefix="/payouts", tags=["payouts"])
 
@@ -61,6 +61,8 @@ def request_payout(
     real bank-transfer rail wired up. See docs/ROADMAP.md for connecting
     Razorpay Route / Stripe Connect transfers.
     """
+    if not db.query(BusinessPayoutAccount).filter(BusinessPayoutAccount.business_id == business.id).first():
+        raise HTTPException(400, "Add a payout bank account in Settings before requesting a payout.")
     bal = _balance(business.id, db)
     if payload.amount <= 0 or payload.amount > bal["available_balance"]:
         raise HTTPException(400, f"Requested amount must be between 0 and {bal['available_balance']:.2f}")
@@ -83,3 +85,41 @@ def request_payout(
     db.commit()
     db.refresh(payout)
     return payout
+
+
+@router.get("/me/transactions", response_model=list[TransactionOut])
+def my_transactions(business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)), db: Session = Depends(get_db)):
+    """Unified chronological ledger — payments in, refunds out, payouts out —
+    with a running balance. Shopify's Finance > Payouts transaction list."""
+    payments = (
+        db.query(Payment)
+        .join(Booking, Booking.id == Payment.booking_id)
+        .filter(Booking.business_id == business.id)
+        .all()
+    )
+    payouts = db.query(PayoutRecord).filter(PayoutRecord.business_id == business.id).all()
+
+    rows = []
+    for p in payments:
+        is_refund = p.payment_type == PaymentType.refund
+        rows.append({
+            "date": p.created_at,
+            "type": "refund" if is_refund else "payment",
+            "description": f"{'Refund' if is_refund else 'Payment'} — {p.method.value.upper()} — {p.gateway_ref}",
+            "amount": -float(p.amount) if is_refund else float(p.amount),
+        })
+    for po in payouts:
+        rows.append({
+            "date": po.created_at,
+            "type": "payout",
+            "description": f"Payout — {po.reference}",
+            "amount": -float(po.amount),
+        })
+
+    rows.sort(key=lambda r: r["date"])
+    balance = 0.0
+    for r in rows:
+        balance += r["amount"]
+        r["running_balance"] = round(balance, 2)
+    rows.reverse()
+    return rows

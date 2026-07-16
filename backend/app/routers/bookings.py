@@ -8,17 +8,26 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.business_access import resolve_business_and_role
+from app.core.business_access import require_business_access, resolve_business_and_role
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_customer
 from app.models.booking import Booking, BookingEvent
 from app.models.business import BusinessProfile
 from app.models.catalog import Package, Service
 from app.models.engagement import Coupon, Notification
-from app.models.enums import BookingStatus, DiscountType, NotificationType, PaymentMethod, PaymentStatus, PaymentType, UserRole
+from app.models.enums import BookingStatus, BusinessStaffRole, DiscountType, NotificationType, PaymentMethod, PaymentStatus, PaymentType, UserRole
 from app.models.payment import Payment
 from app.models.user import User
-from app.schemas.booking import BookingCreate, BookingEventOut, BookingListOut, BookingOut, BookingStatusUpdate, RefundRequest, TagsUpdate
+from app.schemas.booking import (
+    BookingCreate,
+    BookingEventOut,
+    BookingListOut,
+    BookingOut,
+    BookingStatusUpdate,
+    ManualBookingCreate,
+    RefundRequest,
+    TagsUpdate,
+)
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
@@ -38,6 +47,28 @@ def _log(db: Session, booking_id: uuid.UUID, actor_id: uuid.UUID | None, event_t
     db.add(BookingEvent(booking_id=booking_id, actor_id=actor_id, event_type=event_type, message=message))
 
 
+def _apply_coupon(db: Session, code: str, business: BusinessProfile, amount_total: float) -> tuple[float, Coupon]:
+    coupon = db.query(Coupon).filter(Coupon.code == code, Coupon.is_active.is_(True)).first()
+    if not coupon:
+        raise HTTPException(400, "Invalid coupon code")
+    if coupon.business_id is not None and coupon.business_id != business.id:
+        raise HTTPException(400, "This coupon isn't valid for this business")
+    if coupon.valid_to and coupon.valid_to < datetime.utcnow():
+        raise HTTPException(400, "Coupon expired")
+    if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
+        raise HTTPException(400, "Coupon usage limit reached")
+    if amount_total < float(coupon.min_order_value):
+        raise HTTPException(400, f"Minimum order value for this coupon is {coupon.min_order_value}")
+    if coupon.discount_type == DiscountType.flat:
+        discount_amount = float(coupon.discount_value)
+    else:
+        discount_amount = amount_total * float(coupon.discount_value) / 100
+        if coupon.max_discount:
+            discount_amount = min(discount_amount, float(coupon.max_discount))
+    coupon.usage_count += 1
+    return discount_amount, coupon
+
+
 @router.post("", response_model=BookingOut, status_code=201)
 def create_booking(payload: BookingCreate, user: User = Depends(require_customer), db: Session = Depends(get_db)):
     business = db.get(BusinessProfile, payload.business_id)
@@ -53,22 +84,7 @@ def create_booking(payload: BookingCreate, user: User = Depends(require_customer
     amount_total = float(package.price)
     discount_amount = 0.0
     if payload.coupon_code:
-        coupon = db.query(Coupon).filter(Coupon.code == payload.coupon_code, Coupon.is_active.is_(True)).first()
-        if not coupon:
-            raise HTTPException(400, "Invalid coupon code")
-        if coupon.valid_to and coupon.valid_to < datetime.utcnow():
-            raise HTTPException(400, "Coupon expired")
-        if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
-            raise HTTPException(400, "Coupon usage limit reached")
-        if amount_total < float(coupon.min_order_value):
-            raise HTTPException(400, f"Minimum order value for this coupon is {coupon.min_order_value}")
-        if coupon.discount_type == DiscountType.flat:
-            discount_amount = float(coupon.discount_value)
-        else:
-            discount_amount = amount_total * float(coupon.discount_value) / 100
-            if coupon.max_discount:
-                discount_amount = min(discount_amount, float(coupon.max_discount))
-        coupon.usage_count += 1
+        discount_amount, _coupon = _apply_coupon(db, payload.coupon_code, business, amount_total)
         amount_total = max(amount_total - discount_amount, 0)
 
     commission_rate = float(business.commission_rate)
@@ -99,6 +115,62 @@ def create_booking(payload: BookingCreate, user: User = Depends(require_customer
         NotificationType.booking_created,
         "New booking request",
         f"{user.full_name} requested {service.title} ({package.name}).",
+    )
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+@router.post("/manual", response_model=BookingOut, status_code=201)
+def create_manual_booking(
+    payload: ManualBookingCreate,
+    user: User = Depends(get_current_user),
+    business: BusinessProfile = Depends(require_business_access()),
+    db: Session = Depends(get_db),
+):
+    """Business-entered booking for a phone/walk-in customer — Shopify's
+    Draft Order equivalent. The customer must already have a registered
+    account (looked up by email); it lands straight in `accepted` since the
+    business is initiating it, not requesting approval from itself."""
+    customer = db.query(User).filter(User.email == payload.customer_email, User.role == UserRole.customer).first()
+    if not customer:
+        raise HTTPException(404, "No customer account found with that email. They need to register first.")
+
+    service = db.query(Service).filter(Service.id == payload.service_id, Service.business_id == business.id).first()
+    if not service:
+        raise HTTPException(404, "Service not found")
+    package = db.query(Package).filter(Package.id == payload.package_id, Package.service_id == service.id).first()
+    if not package:
+        raise HTTPException(404, "Package not found")
+
+    amount_total = float(package.price)
+    commission_rate = float(business.commission_rate)
+
+    booking = Booking(
+        customer_id=customer.id,
+        business_id=business.id,
+        service_id=service.id,
+        package_id=package.id,
+        status=BookingStatus.accepted,
+        scheduled_date=payload.scheduled_date,
+        scheduled_time=payload.scheduled_time,
+        service_address=payload.service_address,
+        notes=payload.notes,
+        amount_total=amount_total,
+        amount_advance=round(amount_total * 0.30, 2),
+        commission_rate=commission_rate,
+        commission_amount=round(amount_total * commission_rate, 2),
+        created_via="manual",
+    )
+    db.add(booking)
+    db.flush()
+    _log(db, booking.id, user.id, "status_change", f"Created manually by {user.full_name} (phone/walk-in booking).")
+    _notify(
+        db,
+        customer.id,
+        NotificationType.booking_created,
+        "A booking was created for you",
+        f"{business.company_name} created a booking on your behalf for {service.title} ({package.name}).",
     )
     db.commit()
     db.refresh(booking)

@@ -35,6 +35,14 @@ class BusinessUpdate(BaseModel):
     languages: str | None = None
     offers_home_service: bool | None = None
     offers_instant_booking: bool | None = None
+    cancellation_policy: str | None = None
+    refund_policy: str | None = None
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    notify_email_bookings: bool
+    notify_email_payments: bool
+    notify_email_marketing: bool
 
 
 class BusinessOut(BaseModel):
@@ -57,6 +65,11 @@ class BusinessOut(BaseModel):
     rating_avg: float
     rating_count: int
     subscription_plan: SubscriptionPlan
+    cancellation_policy: str | None
+    refund_policy: str | None
+    notify_email_bookings: bool
+    notify_email_payments: bool
+    notify_email_marketing: bool
 
     model_config = {"from_attributes": True}
 
@@ -121,3 +134,41 @@ class CustomerSummaryOut(BaseModel):
 
 class CustomerDetailOut(CustomerSummaryOut):
     bookings: list[BookingListOut] = []
+
+
+class LocationCreate(BaseModel):
+    label: str
+    address: str
+    city: str
+    is_primary: bool = False
+    service_radius_km: float | None = None
+
+
+class LocationOut(LocationCreate):
+    id: uuid.UUID
+    business_id: uuid.UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PayoutAccountCreate(BaseModel):
+    account_holder_name: str
+    bank_name: str
+    account_number: str  # only the last 4 digits are persisted
+    ifsc_code: str
+    upi_id: str | None = None
+
+
+class PayoutAccountOut(BaseModel):
+    id: uuid.UUID
+    business_id: uuid.UUID
+    account_holder_name: str
+    bank_name: str
+    account_number_last4: str
+    ifsc_code: str
+    upi_id: str | None
+    is_verified: bool
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

@@ -27,3 +27,11 @@ class PayoutBalanceOut(BaseModel):
     lifetime_commission: float
     lifetime_refunded: float
     lifetime_paid_out: float
+
+
+class TransactionOut(BaseModel):
+    date: datetime
+    type: str  # payment | refund | payout
+    description: str
+    amount: float  # signed: positive = money in, negative = money out
+    running_balance: float

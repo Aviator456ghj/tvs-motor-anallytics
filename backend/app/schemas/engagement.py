@@ -57,6 +57,7 @@ class CouponCreate(BaseModel):
 
 class CouponOut(CouponCreate):
     id: uuid.UUID
+    business_id: uuid.UUID | None
     usage_count: int
     is_active: bool
 

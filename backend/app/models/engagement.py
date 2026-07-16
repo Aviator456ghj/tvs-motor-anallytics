@@ -72,6 +72,7 @@ class Coupon(Base):
     discount_type: Mapped[DiscountType] = mapped_column(Enum(DiscountType), nullable=False)
     discount_value: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+    business_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("business_profiles.id"), nullable=True)
     min_order_value: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
     max_discount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     usage_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -9,10 +9,10 @@ from app.core.business_access import require_business_access
 from app.core.database import get_db
 from app.core.deps import require_business
 from app.models.booking import Booking
-from app.models.business import BusinessDocument, BusinessProfile, BusinessStaff, Employee
+from app.models.business import BusinessDocument, BusinessLocation, BusinessPayoutAccount, BusinessProfile, BusinessStaff, Employee
 from app.models.catalog import BusinessCategory, Category
-from app.models.enums import BusinessStaffRole, NotificationType, UserRole
-from app.models.engagement import Notification
+from app.models.engagement import Coupon, Notification
+from app.models.enums import BusinessStaffRole, DiscountType, NotificationType, UserRole
 from app.models.user import User
 from app.schemas.booking import BookingListOut, BookingOut
 from app.schemas.business import (
@@ -26,9 +26,15 @@ from app.schemas.business import (
     DocumentOut,
     EmployeeCreate,
     EmployeeOut,
+    LocationCreate,
+    LocationOut,
+    NotificationPreferencesUpdate,
+    PayoutAccountCreate,
+    PayoutAccountOut,
     StaffInvite,
     StaffMemberOut,
 )
+from app.schemas.engagement import CouponCreate, CouponOut
 
 router = APIRouter(prefix="/businesses", tags=["businesses"])
 
@@ -312,3 +318,120 @@ def get_business_customer(
         last_order_at=bookings[0].created_at,
         bookings=booking_items,
     )
+
+
+# --- Discounts (business-scoped, unlike admin's platform-wide coupons) ---
+@router.get("/me/discounts", response_model=list[CouponOut])
+def list_my_discounts(business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)), db: Session = Depends(get_db)):
+    return db.query(Coupon).filter(Coupon.business_id == business.id).order_by(Coupon.valid_from.desc()).all()
+
+
+@router.post("/me/discounts", response_model=CouponOut, status_code=201)
+def create_my_discount(
+    payload: CouponCreate,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    if db.query(Coupon).filter(Coupon.code == payload.code).first():
+        raise HTTPException(400, "Coupon code already exists")
+    coupon = Coupon(business_id=business.id, **payload.model_dump())
+    db.add(coupon)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+@router.patch("/me/discounts/{coupon_id}/deactivate", response_model=CouponOut)
+def deactivate_my_discount(
+    coupon_id: uuid.UUID,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    coupon = db.query(Coupon).filter(Coupon.id == coupon_id, Coupon.business_id == business.id).first()
+    if not coupon:
+        raise HTTPException(404, "Discount not found")
+    coupon.is_active = False
+    db.commit()
+    db.refresh(coupon)
+    return coupon
+
+
+# --- Locations (studio address / home-service radius) ---
+@router.get("/me/locations", response_model=list[LocationOut])
+def list_locations(business: BusinessProfile = Depends(require_business_access()), db: Session = Depends(get_db)):
+    return db.query(BusinessLocation).filter(BusinessLocation.business_id == business.id).order_by(BusinessLocation.created_at).all()
+
+
+@router.post("/me/locations", response_model=LocationOut, status_code=201)
+def create_location(
+    payload: LocationCreate,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    if payload.is_primary:
+        db.query(BusinessLocation).filter(BusinessLocation.business_id == business.id).update({"is_primary": False})
+    location = BusinessLocation(business_id=business.id, **payload.model_dump())
+    db.add(location)
+    db.commit()
+    db.refresh(location)
+    return location
+
+
+@router.delete("/me/locations/{location_id}", status_code=204)
+def delete_location(
+    location_id: uuid.UUID,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    location = db.query(BusinessLocation).filter(BusinessLocation.id == location_id, BusinessLocation.business_id == business.id).first()
+    if not location:
+        raise HTTPException(404, "Location not found")
+    db.delete(location)
+    db.commit()
+
+
+# --- Payout account (bank details payouts are sent to) ---
+@router.get("/me/payout-account", response_model=PayoutAccountOut | None)
+def get_payout_account(business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.owner)), db: Session = Depends(get_db)):
+    return db.query(BusinessPayoutAccount).filter(BusinessPayoutAccount.business_id == business.id).first()
+
+
+@router.put("/me/payout-account", response_model=PayoutAccountOut)
+def set_payout_account(
+    payload: PayoutAccountCreate,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.owner)),
+    db: Session = Depends(get_db),
+):
+    account = db.query(BusinessPayoutAccount).filter(BusinessPayoutAccount.business_id == business.id).first()
+    last4 = payload.account_number[-4:]
+    fields = dict(
+        account_holder_name=payload.account_holder_name,
+        bank_name=payload.bank_name,
+        account_number_last4=last4,
+        ifsc_code=payload.ifsc_code,
+        upi_id=payload.upi_id,
+        is_verified=False,  # any change requires re-verification
+    )
+    if account:
+        for k, v in fields.items():
+            setattr(account, k, v)
+    else:
+        account = BusinessPayoutAccount(business_id=business.id, **fields)
+        db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+# --- Notification preferences ---
+@router.put("/me/notification-preferences", response_model=BusinessOut)
+def update_notification_preferences(
+    payload: NotificationPreferencesUpdate,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.owner)),
+    db: Session = Depends(get_db),
+):
+    for field, value in payload.model_dump().items():
+        setattr(business, field, value)
+    db.commit()
+    db.refresh(business)
+    return business

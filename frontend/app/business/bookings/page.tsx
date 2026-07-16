@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader, Spinner, EmptyState, StatusBadge } from "@/components/ui";
+import { useToast } from "@/components/Toast";
 import { api, ApiError } from "@/lib/api";
-import { BookingEvent, BookingListItem, BookingStatus } from "@/lib/types";
+import { BookingEvent, BookingListItem, BookingStatus, Service } from "@/lib/types";
 
 const NEXT_STATUS: Partial<Record<BookingStatus, BookingStatus[]>> = {
   requested: ["accepted", "rejected"],
@@ -23,12 +25,27 @@ const STATUS_TABS: { id: BookingStatus | "all"; label: string }[] = [
 ];
 
 export default function OrdersPage() {
+  return (
+    <Suspense>
+      <OrdersContent />
+    </Suspense>
+  );
+}
+
+function OrdersContent() {
+  const toast = useToast();
+  const router = useRouter();
+  const params = useSearchParams();
   const [bookings, setBookings] = useState<BookingListItem[] | null>(null);
   const [statusTab, setStatusTab] = useState<BookingStatus | "all">("all");
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(params.get("q") || "");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(params.get("create") === "1");
+
+  useEffect(() => {
+    if (params.get("create") === "1") setShowCreate(true);
+  }, [params]);
 
   function refresh() {
     const qs = new URLSearchParams();
@@ -40,12 +57,12 @@ export default function OrdersPage() {
   useEffect(refresh, [statusTab, q]);
 
   async function transition(id: string, status: BookingStatus) {
-    setError(null);
     try {
       await api.patch(`/bookings/${id}/status`, { status });
       refresh();
+      toast(`Order marked as ${status.replace("_", " ")}`, "success");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not update booking");
+      toast(err instanceof ApiError ? err.message : "Could not update booking", "error");
     }
   }
 
@@ -73,9 +90,14 @@ export default function OrdersPage() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <PageHeader title="Orders" description="Every booking, searchable and filterable — accept, schedule, tag, refund." />
-        <a href={`${process.env.NEXT_PUBLIC_API_URL}/bookings/export`} target="_blank" rel="noreferrer" className="btn-secondary text-sm">
-          Export CSV
-        </a>
+        <div className="flex gap-2">
+          <a href={`${process.env.NEXT_PUBLIC_API_URL}/bookings/export`} target="_blank" rel="noreferrer" className="btn-secondary text-sm">
+            Export CSV
+          </a>
+          <button className="btn-primary text-sm" onClick={() => setShowCreate(true)}>
+            Create order
+          </button>
+        </div>
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -97,8 +119,6 @@ export default function OrdersPage() {
           </button>
         )}
       </div>
-
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
 
       {bookings.length === 0 ? (
         <EmptyState message="No orders match these filters." />
@@ -122,7 +142,10 @@ export default function OrdersPage() {
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" checked={selected.has(b.id)} onChange={() => toggleSelect(b.id)} />
                   </td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{b.customer_name}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">
+                    {b.customer_name}
+                    {b.created_via === "manual" && <span className="badge ml-1.5 bg-slate-100 text-slate-500">Manual</span>}
+                  </td>
                   <td className="px-4 py-3 text-slate-500">
                     {b.service_title} · {b.package_name}
                   </td>
@@ -157,18 +180,133 @@ export default function OrdersPage() {
       )}
 
       {active && <OrderDrawer booking={active} onClose={() => setActiveId(null)} onChanged={refresh} />}
+      {showCreate && (
+        <CreateOrderModal
+          onClose={() => {
+            setShowCreate(false);
+            router.replace("/business/bookings");
+          }}
+          onCreated={() => {
+            refresh();
+            setShowCreate(false);
+            router.replace("/business/bookings");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateOrderModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const toast = useToast();
+  const [services, setServices] = useState<Service[] | null>(null);
+  const [form, setForm] = useState({ customer_email: "", service_id: "", package_id: "", scheduled_date: "", service_address: "", notes: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<Service[]>("/services/me").then((list) => {
+      setServices(list);
+      if (list[0]) setForm((f) => ({ ...f, service_id: list[0].id, package_id: list[0].packages[0]?.id || "" }));
+    });
+  }, []);
+
+  const activeService = services?.find((s) => s.id === form.service_id);
+  const activePackage = activeService?.packages.find((p) => p.id === form.package_id);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/bookings/manual", {
+        customer_email: form.customer_email,
+        service_id: form.service_id,
+        package_id: form.package_id,
+        scheduled_date: form.scheduled_date || undefined,
+        service_address: form.service_address || undefined,
+        notes: form.notes || undefined,
+      });
+      toast("Order created", "success");
+      onCreated();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not create order");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/30 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="font-semibold text-slate-900">Create order</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700">✕</button>
+        </div>
+        <p className="mb-4 text-xs text-slate-500">For phone or walk-in bookings. The customer must already have a ServicesOS account.</p>
+        {!services ? (
+          <Spinner />
+        ) : (
+          <form onSubmit={submit} className="space-y-3">
+            <div>
+              <label className="label">Customer email</label>
+              <input className="input" type="email" required value={form.customer_email} onChange={(e) => setForm({ ...form, customer_email: e.target.value })} />
+            </div>
+            <div>
+              <label className="label">Service</label>
+              <select
+                className="input"
+                value={form.service_id}
+                onChange={(e) => {
+                  const svc = services.find((s) => s.id === e.target.value);
+                  setForm({ ...form, service_id: e.target.value, package_id: svc?.packages[0]?.id || "" });
+                }}
+              >
+                {services.map((s) => (
+                  <option key={s.id} value={s.id}>{s.title}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Package</label>
+              <select className="input" value={form.package_id} onChange={(e) => setForm({ ...form, package_id: e.target.value })}>
+                {activeService?.packages.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} — ₹{p.price.toLocaleString()}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Date</label>
+              <input className="input" type="date" value={form.scheduled_date} onChange={(e) => setForm({ ...form, scheduled_date: e.target.value })} />
+            </div>
+            <div>
+              <label className="label">Service address (optional)</label>
+              <input className="input" value={form.service_address} onChange={(e) => setForm({ ...form, service_address: e.target.value })} />
+            </div>
+            {activePackage && (
+              <div className="summary-box rounded-lg bg-slate-50 p-2.5 text-xs text-slate-600">
+                Total: <b>₹{activePackage.price.toLocaleString()}</b> — booking will be created as <b>Accepted</b>.
+              </div>
+            )}
+            {error && <p className="text-sm text-red-600">{error}</p>}
+            <button className="btn-primary w-full" disabled={busy || !form.package_id}>
+              {busy ? "Creating…" : "Create order"}
+            </button>
+          </form>
+        )}
+      </div>
     </div>
   );
 }
 
 function OrderDrawer({ booking, onClose, onChanged }: { booking: BookingListItem; onClose: () => void; onChanged: () => void }) {
+  const toast = useToast();
   const [events, setEvents] = useState<BookingEvent[] | null>(null);
   const [note, setNote] = useState("");
   const [tagsInput, setTagsInput] = useState(booking.tags || "");
   const [refundAmount, setRefundAmount] = useState("");
   const [refundReason, setRefundReason] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
 
   function refreshEvents() {
     api.get<BookingEvent[]>(`/bookings/${booking.id}/events`).then(setEvents);
@@ -183,9 +321,9 @@ function OrderDrawer({ booking, onClose, onChanged }: { booking: BookingListItem
       await api.patch(`/bookings/${booking.id}/tags`, { tags: tagsInput.split(",").map((t) => t.trim()) });
       onChanged();
       refreshEvents();
-      setMsg("Tags updated.");
+      toast("Tags updated", "success");
     } catch (err) {
-      setMsg(err instanceof ApiError ? err.message : "Could not update tags");
+      toast(err instanceof ApiError ? err.message : "Could not update tags", "error");
     } finally {
       setBusy(false);
     }
@@ -198,8 +336,9 @@ function OrderDrawer({ booking, onClose, onChanged }: { booking: BookingListItem
       await api.post(`/bookings/${booking.id}/notes?message=${encodeURIComponent(note)}`);
       setNote("");
       refreshEvents();
+      toast("Note added", "success");
     } catch (err) {
-      setMsg(err instanceof ApiError ? err.message : "Could not add note");
+      toast(err instanceof ApiError ? err.message : "Could not add note", "error");
     } finally {
       setBusy(false);
     }
@@ -207,16 +346,15 @@ function OrderDrawer({ booking, onClose, onChanged }: { booking: BookingListItem
 
   async function issueRefund() {
     setBusy(true);
-    setMsg(null);
     try {
       await api.post(`/bookings/${booking.id}/refund`, { amount: Number(refundAmount), reason: refundReason });
       setRefundAmount("");
       setRefundReason("");
       onChanged();
       refreshEvents();
-      setMsg("Refund issued to customer's wallet.");
+      toast("Refund issued to customer's wallet", "success");
     } catch (err) {
-      setMsg(err instanceof ApiError ? err.message : "Could not issue refund");
+      toast(err instanceof ApiError ? err.message : "Could not issue refund", "error");
     } finally {
       setBusy(false);
     }
@@ -249,8 +387,6 @@ function OrderDrawer({ booking, onClose, onChanged }: { booking: BookingListItem
             <p className="font-semibold">₹{booking.amount_refunded.toLocaleString()}</p>
           </div>
         </div>
-
-        {msg && <p className="mb-3 text-sm text-brand-700">{msg}</p>}
 
         <div className="mb-5">
           <label className="label">Tags (comma separated)</label>

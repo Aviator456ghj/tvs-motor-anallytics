@@ -8,6 +8,7 @@ from app.core.business_access import require_business_access
 from app.core.database import get_db
 from app.models.booking import Booking
 from app.models.business import BusinessProfile
+from app.models.catalog import Package, Service
 from app.models.engagement import Review
 from app.models.enums import BusinessStaffRole, BookingStatus
 from app.models.payment import Payment
@@ -94,3 +95,64 @@ def my_reviews_summary(
         db.query(Review.rating, func.count(Review.id)).filter(Review.business_id == business.id).group_by(Review.rating).all()
     )
     return {"rating_avg": business.rating_avg, "rating_count": business.rating_count, "breakdown": {str(k): v for k, v in breakdown.items()}}
+
+
+@router.get("/business/me/reports/top-services")
+def top_services_report(
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(Service.title, func.count(Booking.id), func.coalesce(func.sum(Booking.amount_paid), 0))
+        .join(Booking, Booking.service_id == Service.id)
+        .filter(Service.business_id == business.id)
+        .group_by(Service.title)
+        .order_by(func.coalesce(func.sum(Booking.amount_paid), 0).desc())
+        .all()
+    )
+    return [{"service": title, "bookings": count, "revenue": float(revenue)} for title, count, revenue in rows]
+
+
+@router.get("/business/me/reports/repeat-customers")
+def repeat_customers_report(
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(Booking.customer_id, func.count(Booking.id))
+        .filter(Booking.business_id == business.id)
+        .group_by(Booking.customer_id)
+        .all()
+    )
+    total_customers = len(rows)
+    repeat_customers = sum(1 for _cid, count in rows if count > 1)
+    return {
+        "total_customers": total_customers,
+        "repeat_customers": repeat_customers,
+        "repeat_rate": round(repeat_customers / total_customers, 2) if total_customers else 0,
+    }
+
+
+@router.get("/business/me/reports/funnel")
+def booking_funnel_report(
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    total = db.query(func.count(Booking.id)).filter(Booking.business_id == business.id).scalar()
+    accepted_or_later = (
+        db.query(func.count(Booking.id))
+        .filter(Booking.business_id == business.id, Booking.status != BookingStatus.requested, Booking.status != BookingStatus.rejected)
+        .scalar()
+    )
+    scheduled_or_later = (
+        db.query(func.count(Booking.id))
+        .filter(Booking.business_id == business.id, Booking.status.in_(["scheduled", "in_progress", "completed"]))
+        .scalar()
+    )
+    completed = db.query(func.count(Booking.id)).filter(Booking.business_id == business.id, Booking.status == BookingStatus.completed).scalar()
+    return [
+        {"stage": "Requested", "count": total},
+        {"stage": "Accepted", "count": accepted_or_later},
+        {"stage": "Scheduled", "count": scheduled_or_later},
+        {"stage": "Completed", "count": completed},
+    ]

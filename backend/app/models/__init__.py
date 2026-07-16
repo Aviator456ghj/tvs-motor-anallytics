@@ -1,4 +1,4 @@
-from app.models.business import BusinessDocument, BusinessProfile, BusinessStaff, Employee
+from app.models.business import BusinessDocument, BusinessLocation, BusinessPayoutAccount, BusinessProfile, BusinessStaff, Employee
 from app.models.booking import Booking, BookingEvent
 from app.models.catalog import (
     AvailabilitySlot,
@@ -27,6 +27,8 @@ __all__ = [
     "Employee",
     "BusinessStaff",
     "BusinessDocument",
+    "BusinessLocation",
+    "BusinessPayoutAccount",
     "Category",
     "BusinessCategory",
     "Service",

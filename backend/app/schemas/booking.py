@@ -17,6 +17,16 @@ class BookingCreate(BaseModel):
     coupon_code: str | None = None
 
 
+class ManualBookingCreate(BaseModel):
+    customer_email: str
+    service_id: uuid.UUID
+    package_id: uuid.UUID
+    scheduled_date: date | None = None
+    scheduled_time: time | None = None
+    service_address: str | None = None
+    notes: str | None = None
+
+
 class BookingStatusUpdate(BaseModel):
     status: BookingStatus
     cancellation_reason: str | None = None
@@ -60,6 +70,7 @@ class BookingOut(BaseModel):
     commission_amount: float
     discount_amount: float
     tags: str | None
+    created_via: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -113,6 +113,37 @@ parts like inventory, shipping, or themes, which don't apply here):
   owner-only endpoints even if they know the URL) — not just hidden nav
   items in the frontend.
 
+The Business Portal's shell (`components/BusinessShell.tsx`) also went
+through a real Shopify-admin-depth pass, on the theory that "same UI/UX
+performance as Shopify" means the *interaction model*, not the color
+palette:
+
+- **Icon sidebar with collapsible sections** (`components/icons.tsx`) — a
+  flat top-level nav (Home, Orders, Products, Customers, Discounts, Finance,
+  Analytics, Online Store, Settings) where the active section expands its
+  sub-pages inline, mirroring Shopify Admin's actual navigation pattern
+  rather than a flat always-expanded tree.
+- **A real top bar**: global search, a notification bell with unread count
+  and mark-as-read, and a "Create" quick-action menu (Create order / Add
+  service / Add discount) reachable from any business page — Shopify's
+  global "+" pattern.
+- **A Settings hub** (`/business/settings`) instead of stuffing every
+  settings page into the sidebar — cards grouped by Business / Payments /
+  Team / Compliance, linking out to Locations, Payout Account, Policies,
+  Notifications, Staff, Team Roster, KYC, and Plan & Billing.
+- **Further Shopify-parity additions**: business-scoped discount codes
+  (`Coupon.business_id`, previously platform-only), manual/phone order
+  creation (`POST /bookings/manual` — Shopify's Draft Order equivalent,
+  requires the customer to already have an account), a payout bank account
+  gate (`BusinessPayoutAccount` — payout requests 400 without one, matching
+  Shopify's requirement to add a payout method before Shopify Payments
+  pays out), a unified transactions ledger with a running balance
+  (`GET /payouts/me/transactions`), and a small reports library (top
+  services by revenue, repeat-customer rate, booking funnel).
+- **A shared toast system** (`components/Toast.tsx`) replaces page-local
+  inline error/success `<p>` tags for anything built or touched in this
+  pass, matching Shopify's snackbar-confirmation pattern.
+
 ## What's fully implemented vs. intentionally stubbed
 
 | Area | Status | Notes |

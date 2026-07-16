@@ -32,6 +32,7 @@ class Booking(Base):
     cancellation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tags: Mapped[str | None] = mapped_column(String(255), nullable=True)  # comma separated
     amount_refunded: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    created_via: Mapped[str] = mapped_column(String(20), default="online")  # online | manual (business-entered)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
