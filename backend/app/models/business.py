@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.enums import DocumentStatus, KycStatus, SubscriptionPlan
+from app.models.enums import BusinessStaffRole, DocumentStatus, KycStatus, SubscriptionPlan
 
 
 class BusinessProfile(Base):
@@ -45,6 +45,8 @@ class BusinessProfile(Base):
     portfolio_items = relationship("PortfolioItem", back_populates="business", cascade="all, delete-orphan")
     availability_slots = relationship("AvailabilitySlot", back_populates="business", cascade="all, delete-orphan")
     category_links = relationship("BusinessCategory", back_populates="business", cascade="all, delete-orphan")
+    staff_members = relationship("BusinessStaff", back_populates="business", cascade="all, delete-orphan")
+    payouts = relationship("PayoutRecord", back_populates="business", cascade="all, delete-orphan")
 
 
 class Employee(Base):
@@ -59,6 +61,24 @@ class Employee(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     business = relationship("BusinessProfile", back_populates="employees")
+
+
+class BusinessStaff(Base):
+    """A business-role user granted access to someone else's business, with a
+    permission tier. The owner (BusinessProfile.owner_id) always has full
+    access implicitly and never needs a row here."""
+
+    __tablename__ = "business_staff"
+    __table_args__ = (UniqueConstraint("business_id", "user_id", name="uq_business_staff"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("business_profiles.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    role: Mapped[BusinessStaffRole] = mapped_column(Enum(BusinessStaffRole), default=BusinessStaffRole.staff)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    business = relationship("BusinessProfile", back_populates="staff_members")
+    user = relationship("User")
 
 
 class BusinessDocument(Base):

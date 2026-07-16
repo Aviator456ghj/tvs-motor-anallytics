@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { PageHeader, Spinner, StatusBadge } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
-import { Booking } from "@/lib/types";
+import { Booking, BookingEvent } from "@/lib/types";
 
 interface Payment {
   id: string;
@@ -21,6 +21,7 @@ export default function BookingDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [booking, setBooking] = useState<Booking | null>(null);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [events, setEvents] = useState<BookingEvent[]>([]);
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -29,6 +30,7 @@ export default function BookingDetailPage() {
   function refresh() {
     api.get<Booking>(`/bookings/${id}`).then(setBooking);
     api.get<Payment[]>(`/payments/booking/${id}`).then(setPayments);
+    api.get<BookingEvent[]>(`/bookings/${id}/events`).then(setEvents);
   }
 
   useEffect(refresh, [id]);
@@ -100,6 +102,12 @@ export default function BookingDetailPage() {
               <p className="text-slate-400">Remaining</p>
               <p className="font-semibold text-slate-800">₹{Math.max(remaining, 0).toLocaleString()}</p>
             </div>
+            {booking.amount_refunded > 0 && (
+              <div>
+                <p className="text-slate-400">Refunded</p>
+                <p className="font-semibold text-emerald-700">₹{booking.amount_refunded.toLocaleString()}</p>
+              </div>
+            )}
             {booking.scheduled_date && (
               <div>
                 <p className="text-slate-400">Scheduled</p>
@@ -160,6 +168,20 @@ export default function BookingDetailPage() {
                     <p className="text-xs text-slate-400">{p.method.toUpperCase()} · {new Date(p.created_at).toLocaleDateString()}</p>
                   </div>
                   <p className="font-medium text-slate-800">₹{p.amount.toLocaleString()}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <h3 className="mb-3 mt-6 font-semibold text-slate-900">Order timeline</h3>
+          {events.length === 0 ? (
+            <p className="text-sm text-slate-500">No updates yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {[...events].reverse().map((e) => (
+                <div key={e.id} className="border-l-2 border-slate-200 pl-3 text-xs">
+                  <p className="text-slate-700">{e.message}</p>
+                  <p className="text-slate-400">{new Date(e.created_at).toLocaleString()}</p>
                 </div>
               ))}
             </div>

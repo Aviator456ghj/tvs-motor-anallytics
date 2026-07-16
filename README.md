@@ -54,10 +54,15 @@ npm run dev
 |----------|-------------------------------------|
 | Admin    | admin@servicesos.io                 |
 | Customer | customer@servicesos.io              |
-| Business | abc.photography@servicesos.io       |
+| Business (Owner) | abc.photography@servicesos.io |
+| Business (Manager, added to ABC Photography's team) | staff.manager@servicesos.io |
 | Business | framecraft.films@servicesos.io      |
 | Business | pixelpost.studio@servicesos.io      |
 | Business | celebrate.events@servicesos.io      |
+
+ABC Photography is pre-seeded with one full order lifecycle (booking →
+payment → partial refund → payout) so Orders, Customers, Payouts, and Staff
+all have real data on first login.
 
 ## What's actually implemented
 
@@ -71,10 +76,17 @@ Elasticsearch, WebSockets), and [docs/ROADMAP.md](docs/ROADMAP.md) for how to
 extend each stub without touching the core engine.
 
 - **Backend** (`backend/`): FastAPI + SQLAlchemy + Postgres, JWT auth with
-  three roles (customer/business/admin), 22 tables covering the entire
-  domain, ~90 REST endpoints. Booking commission, advance/remaining payment
+  three roles (customer/business/admin), 25 tables covering the entire
+  domain, 100+ REST endpoints. Booking commission, advance/remaining payment
   split, coupon discounts, KYC approval workflow, and admin dashboard metrics
   are all real business logic, not placeholders.
+- **Shopify-parity business tooling**: an Orders workspace (search, filters,
+  bulk-accept, tags, internal notes, a full order timeline, CSV export),
+  refunds, a Payouts ledger (available balance, payout history), Customer 360
+  (lifetime spend + order history per customer), and Staff accounts with
+  three permission tiers (Owner/Manager/Staff) enforced on every business
+  endpoint — a teammate's access is checked server-side, not just hidden in
+  the UI. See `docs/ARCHITECTURE.md#shopify-parity-features` for the mapping.
 - **Frontend** (`frontend/`): Next.js 14 App Router + TypeScript + Tailwind.
   Every sidebar section from the product spec (Customer, Business, Super
   Admin) is a routed page wired to the real API — not a static wireframe.

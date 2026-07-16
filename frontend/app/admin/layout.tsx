@@ -10,6 +10,7 @@ const sections: NavSection[] = [
   {
     label: "Marketplace",
     items: [
+      { href: "/admin/orders", label: "All Orders" },
       { href: "/admin/businesses", label: "All Businesses" },
       { href: "/admin/customers", label: "All Customers" },
       { href: "/admin/categories", label: "Categories" },
@@ -21,6 +22,7 @@ const sections: NavSection[] = [
     label: "Revenue",
     items: [
       { href: "/admin/revenue", label: "Revenue" },
+      { href: "/admin/payouts", label: "Payouts" },
       { href: "/admin/commission", label: "Commission" },
       { href: "/admin/coupons", label: "Coupons" },
     ],

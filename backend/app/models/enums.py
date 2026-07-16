@@ -80,3 +80,15 @@ class SubscriptionPlan(str, enum.Enum):
 class DiscountType(str, enum.Enum):
     flat = "flat"
     percent = "percent"
+
+
+class BusinessStaffRole(str, enum.Enum):
+    staff = "staff"
+    manager = "manager"
+    owner = "owner"
+
+
+class PayoutStatus(str, enum.Enum):
+    scheduled = "scheduled"
+    paid = "paid"
+    failed = "failed"

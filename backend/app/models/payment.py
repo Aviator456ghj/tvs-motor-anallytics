@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.enums import PaymentMethod, PaymentStatus, PaymentType
+from app.models.enums import PaymentMethod, PayoutStatus, PaymentStatus, PaymentType
 
 
 class Payment(Base):
@@ -35,6 +35,24 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     renews_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PayoutRecord(Base):
+    """Money moved from platform to a business's bank account. Payout
+    execution is simulated (marked `paid` immediately on request) — see
+    docs/ROADMAP.md for wiring a real payout rail (Razorpay Route, Stripe
+    Connect transfers)."""
+
+    __tablename__ = "payout_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("business_profiles.id"))
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    status: Mapped[PayoutStatus] = mapped_column(Enum(PayoutStatus), default=PayoutStatus.paid)
+    reference: Mapped[str] = mapped_column(String(60), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    business = relationship("BusinessProfile", back_populates="payouts")
 
 
 class Invoice(Base):

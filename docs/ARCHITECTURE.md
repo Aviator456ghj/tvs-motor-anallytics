@@ -78,6 +78,41 @@ booking-creation time (`business.commission_rate × amount_total`) and stored
 on the booking row, so changing a business's commission rate later doesn't
 retroactively affect past bookings.
 
+## Shopify-parity features
+
+A booking is the marketplace's "order" — the Business Portal's Orders,
+Payouts, Customers, and Staff Accounts sections mirror the parts of Shopify
+Admin that translate to a services business (not the e-commerce-specific
+parts like inventory, shipping, or themes, which don't apply here):
+
+- **Orders** (`bookings.py`): search/filter/tag/CSV-export on top of the
+  existing booking list, plus `BookingEvent` — an append-only timeline
+  logging every status change automatically and every manual note/tag
+  edit. Timeline visibility is role-scoped: `note` and `tag` events are
+  internal-only and stripped from customer-facing responses
+  (`_INTERNAL_ONLY_EVENT_TYPES`); the customer still sees status changes,
+  payments, and refunds on their own order.
+- **Refunds** (`bookings.py::refund_booking`): partial or full, credited to
+  the customer's `wallet_balance`, capped at `amount_paid - amount_refunded`.
+- **Payouts** (`payouts.py`): `available_balance = gross_paid - refunded -
+  commission_on_completed_bookings - already_paid_out`. Requesting a payout
+  is simulated as instant (see docs/ROADMAP.md) but the ledger math is real.
+- **Customer 360** (`businesses.py::list_business_customers` /
+  `get_business_customer`): per-business customer list with lifetime spend
+  and order history, computed with a `GROUP BY customer_id` over bookings —
+  no separate CRM table needed.
+- **Staff accounts** (`core/business_access.py`, `models/business.py::BusinessStaff`):
+  a business is reachable by its owner (implicit, full access) or by any
+  `BusinessStaff` row granting a tier (`staff` < `manager` < `owner`).
+  `require_business_access(min_role)` is the single dependency every
+  business router uses instead of an ad-hoc `owner_id` check, so a
+  permission tier applies uniformly everywhere: catalog/bookings/availability
+  need `staff`+, earnings/analytics/customers/reviews need `manager`+,
+  company-profile/KYC/payouts/staff-management need `owner`. This is
+  enforced server-side (tested: a `staff`-tier user gets a 403 on
+  owner-only endpoints even if they know the URL) — not just hidden nav
+  items in the frontend.
+
 ## What's fully implemented vs. intentionally stubbed
 
 | Area | Status | Notes |

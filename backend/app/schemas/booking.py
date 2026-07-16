@@ -22,6 +22,26 @@ class BookingStatusUpdate(BaseModel):
     cancellation_reason: str | None = None
 
 
+class TagsUpdate(BaseModel):
+    tags: list[str]
+
+
+class RefundRequest(BaseModel):
+    amount: float
+    reason: str
+
+
+class BookingEventOut(BaseModel):
+    id: uuid.UUID
+    booking_id: uuid.UUID
+    actor_id: uuid.UUID | None
+    event_type: str
+    message: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class BookingOut(BaseModel):
     id: uuid.UUID
     customer_id: uuid.UUID
@@ -36,11 +56,22 @@ class BookingOut(BaseModel):
     amount_total: float
     amount_advance: float
     amount_paid: float
+    amount_refunded: float
     commission_amount: float
     discount_amount: float
+    tags: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class BookingListOut(BookingOut):
+    """BookingOut plus joined display fields, for the Orders-style list views."""
+
+    customer_name: str
+    business_name: str
+    service_title: str
+    package_name: str
 
 
 class PaymentCreate(BaseModel):

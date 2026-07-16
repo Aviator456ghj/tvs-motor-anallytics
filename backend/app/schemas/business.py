@@ -1,8 +1,10 @@
 import uuid
+from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
-from app.models.enums import KycStatus, SubscriptionPlan
+from app.models.enums import BusinessStaffRole, KycStatus, SubscriptionPlan
+from app.schemas.booking import BookingListOut
 from app.schemas.catalog import PortfolioItemOut, ServiceOut
 
 
@@ -89,3 +91,33 @@ class DocumentOut(DocumentCreate):
     status: str
 
     model_config = {"from_attributes": True}
+
+
+class StaffInvite(BaseModel):
+    email: EmailStr
+    role: BusinessStaffRole = BusinessStaffRole.staff
+
+
+class StaffMemberOut(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    role: BusinessStaffRole
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CustomerSummaryOut(BaseModel):
+    customer_id: uuid.UUID
+    full_name: str
+    email: str
+    city: str | None
+    order_count: int
+    total_spent: float
+    last_order_at: datetime
+
+
+class CustomerDetailOut(CustomerSummaryOut):
+    bookings: list[BookingListOut] = []

@@ -1,27 +1,26 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.business_access import require_business_access
 from app.core.database import get_db
-from app.core.deps import require_business
 from app.models.booking import Booking
 from app.models.business import BusinessProfile
 from app.models.engagement import Review
-from app.models.enums import BookingStatus
+from app.models.enums import BusinessStaffRole, BookingStatus
 from app.models.payment import Payment
-from app.models.user import User
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 @router.get("/business/me")
-def my_business_analytics(days: int = 30, user: User = Depends(require_business), db: Session = Depends(get_db)):
-    business = db.query(BusinessProfile).filter(BusinessProfile.owner_id == user.id).first()
-    if not business:
-        raise HTTPException(404, "Business profile not found")
-
+def my_business_analytics(
+    days: int = 30,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
     since = datetime.utcnow() - timedelta(days=days)
     bookings_q = db.query(Booking).filter(Booking.business_id == business.id)
 
@@ -62,11 +61,35 @@ def my_business_analytics(days: int = 30, user: User = Depends(require_business)
     }
 
 
+@router.get("/business/me/timeseries")
+def my_business_timeseries(
+    days: int = 30,
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
+    since = (datetime.utcnow() - timedelta(days=days - 1)).date()
+    rows = (
+        db.query(func.date(Booking.created_at).label("d"), func.count(Booking.id), func.coalesce(func.sum(Booking.amount_paid), 0))
+        .filter(Booking.business_id == business.id, Booking.created_at >= since)
+        .group_by("d")
+        .order_by("d")
+        .all()
+    )
+    by_day = {str(r[0]): {"bookings": r[1], "revenue": float(r[2])} for r in rows}
+    series = []
+    for i in range(days):
+        d = since + timedelta(days=i)
+        key = str(d)
+        entry = by_day.get(key, {"bookings": 0, "revenue": 0.0})
+        series.append({"date": key, **entry})
+    return series
+
+
 @router.get("/business/me/reviews-summary")
-def my_reviews_summary(user: User = Depends(require_business), db: Session = Depends(get_db)):
-    business = db.query(BusinessProfile).filter(BusinessProfile.owner_id == user.id).first()
-    if not business:
-        raise HTTPException(404, "Business profile not found")
+def my_reviews_summary(
+    business: BusinessProfile = Depends(require_business_access(BusinessStaffRole.manager)),
+    db: Session = Depends(get_db),
+):
     breakdown = dict(
         db.query(Review.rating, func.count(Review.id)).filter(Review.business_id == business.id).group_by(Review.rating).all()
     )

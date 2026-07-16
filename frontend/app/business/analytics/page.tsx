@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { PageHeader, StatCard, Spinner } from "@/components/ui";
+import TrendChart, { TrendPoint } from "@/components/TrendChart";
 import { api } from "@/lib/api";
 
 interface Analytics {
@@ -15,14 +16,25 @@ interface Analytics {
   status_breakdown: Record<string, number>;
 }
 
+interface DayPoint {
+  date: string;
+  bookings: number;
+  revenue: number;
+}
+
 export default function BusinessAnalyticsPage() {
   const [data, setData] = useState<Analytics | null>(null);
+  const [series, setSeries] = useState<DayPoint[] | null>(null);
+  const [metric, setMetric] = useState<"revenue" | "bookings">("revenue");
 
   useEffect(() => {
     api.get<Analytics>("/analytics/business/me").then(setData);
+    api.get<DayPoint[]>("/analytics/business/me/timeseries?days=30").then(setSeries);
   }, []);
 
-  if (!data) return <Spinner />;
+  if (!data || !series) return <Spinner />;
+
+  const points: TrendPoint[] = series.map((d) => ({ date: d.date, value: metric === "revenue" ? d.revenue : d.bookings }));
 
   return (
     <div>
@@ -33,6 +45,28 @@ export default function BusinessAnalyticsPage() {
         <StatCard label="Cancelled" value={data.cancelled_bookings} />
         <StatCard label="Rating" value={`${data.rating_avg.toFixed(1)} ★`} sub={`${data.rating_count} reviews`} />
       </div>
+
+      <div className="card mb-6">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="font-semibold text-slate-900">{metric === "revenue" ? "Revenue" : "Bookings"} — last 30 days</h3>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setMetric("revenue")}
+              className={`badge ${metric === "revenue" ? "bg-brand-100 text-brand-700" : "bg-slate-100 text-slate-500"}`}
+            >
+              Revenue
+            </button>
+            <button
+              onClick={() => setMetric("bookings")}
+              className={`badge ${metric === "bookings" ? "bg-brand-100 text-brand-700" : "bg-slate-100 text-slate-500"}`}
+            >
+              Bookings
+            </button>
+          </div>
+        </div>
+        <TrendChart data={points} valueFormatter={(v) => (metric === "revenue" ? `₹${v.toLocaleString()}` : `${v} bookings`)} />
+      </div>
+
       <div className="card">
         <h3 className="mb-3 font-semibold text-slate-900">Status breakdown</h3>
         <div className="space-y-2">

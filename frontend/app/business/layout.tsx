@@ -26,18 +26,26 @@ const sections: NavSection[] = [
     ],
   },
   {
-    label: "Business",
+    label: "Orders",
     items: [
-      { href: "/business/bookings", label: "Booking Requests" },
+      { href: "/business/bookings", label: "Orders" },
+      { href: "/business/customers", label: "Customers" },
+      { href: "/business/reviews", label: "Customer Reviews" },
+    ],
+  },
+  {
+    label: "Finance",
+    items: [
+      { href: "/business/payouts", label: "Payouts" },
       { href: "/business/earnings", label: "Earnings" },
       { href: "/business/analytics", label: "Analytics" },
-      { href: "/business/reviews", label: "Customer Reviews" },
       { href: "/business/invoices", label: "Invoices" },
     ],
   },
   {
     label: "Account",
     items: [
+      { href: "/business/staff", label: "Staff Accounts" },
       { href: "/business/chat", label: "Chat" },
       { href: "/business/subscription", label: "Subscription" },
     ],

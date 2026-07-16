@@ -11,10 +11,11 @@ from app.models.booking import Booking
 from app.models.business import BusinessDocument, BusinessProfile
 from app.models.engagement import CmsPage, Notification, SupportTicket
 from app.models.enums import BookingStatus, DocumentStatus, KycStatus, NotificationType
-from app.models.payment import Payment
+from app.models.payment import Payment, PayoutRecord
 from app.models.user import User
 from app.schemas.business import BusinessOut, DocumentOut
 from app.schemas.engagement import CmsPageCreate, CmsPageOut, SupportTicketOut
+from app.schemas.payout import PayoutOut
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -44,6 +45,34 @@ def dashboard_summary(db: Session = Depends(get_db)):
         "open_support_tickets": open_tickets,
         "bookings_last_30_days": bookings_30d,
     }
+
+
+@router.get("/dashboard/timeseries")
+def dashboard_timeseries(days: int = 30, db: Session = Depends(get_db)):
+    since = (datetime.utcnow() - timedelta(days=days - 1)).date()
+    rows = (
+        db.query(func.date(Booking.created_at).label("d"), func.count(Booking.id), func.coalesce(func.sum(Booking.amount_paid), 0))
+        .filter(Booking.created_at >= since)
+        .group_by("d")
+        .order_by("d")
+        .all()
+    )
+    by_day = {str(r[0]): {"bookings": r[1], "revenue": float(r[2])} for r in rows}
+    series = []
+    for i in range(days):
+        d = since + timedelta(days=i)
+        key = str(d)
+        entry = by_day.get(key, {"bookings": 0, "revenue": 0.0})
+        series.append({"date": key, **entry})
+    return series
+
+
+@router.get("/payouts", response_model=list[PayoutOut])
+def list_all_payouts(business_id: uuid.UUID | None = None, db: Session = Depends(get_db)):
+    query = db.query(PayoutRecord)
+    if business_id:
+        query = query.filter(PayoutRecord.business_id == business_id)
+    return query.order_by(PayoutRecord.created_at.desc()).all()
 
 
 @router.get("/businesses", response_model=list[BusinessOut])

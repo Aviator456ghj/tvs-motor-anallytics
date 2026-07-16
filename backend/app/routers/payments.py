@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.business_access import resolve_business_and_role
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.booking import Booking
@@ -22,7 +23,7 @@ def _assert_booking_access(booking: Booking, user: User, db: Session):
     if user.role == UserRole.customer and booking.customer_id == user.id:
         return
     if user.role == UserRole.business:
-        business = db.query(BusinessProfile).filter(BusinessProfile.owner_id == user.id).first()
+        business, _role = resolve_business_and_role(user, db)
         if business and booking.business_id == business.id:
             return
     raise HTTPException(403, "Not authorized for this booking")

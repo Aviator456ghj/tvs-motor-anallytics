@@ -17,6 +17,7 @@ from app.routers import (
     customers,
     notifications,
     payments,
+    payouts,
     reviews,
     search,
     services,
@@ -54,6 +55,7 @@ app.include_router(services.router, prefix="/api/v1")
 app.include_router(availability.router, prefix="/api/v1")
 app.include_router(bookings.router, prefix="/api/v1")
 app.include_router(payments.router, prefix="/api/v1")
+app.include_router(payouts.router, prefix="/api/v1")
 app.include_router(reviews.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")

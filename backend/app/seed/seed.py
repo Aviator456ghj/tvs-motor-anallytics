@@ -11,10 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.core.database import Base, SessionLocal, engine
 from app.core.security import hash_password
-from app.models.business import BusinessProfile
+from app.models.booking import Booking, BookingEvent
+from app.models.business import BusinessProfile, BusinessStaff
 from app.models.catalog import AvailabilitySlot, BusinessCategory, Category, Package, PortfolioItem, Service
-from app.models.enums import DiscountType, PortfolioType, UserRole
+from app.models.enums import BookingStatus, BusinessStaffRole, DiscountType, PaymentMethod, PaymentStatus, PaymentType, PayoutStatus, PortfolioType, UserRole
 from app.models.engagement import Coupon
+from app.models.payment import Payment, PayoutRecord
 from app.models.user import User
 from app.seed.categories_data import CATEGORY_ICONS, CATEGORY_TAXONOMY
 
@@ -212,12 +214,76 @@ def seed_demo_marketplace(db: Session, categories: dict[str, Category]):
     print(f"Seeded {len(demo_businesses)} demo businesses (password for all: {DEMO_PASSWORD}).")
 
 
+def seed_demo_activity(db: Session):
+    """Gives ABC Photography a staff teammate and one full order lifecycle
+    (booking -> payment -> partial refund -> payout) so Orders, Customers,
+    Staff, and Payouts all have real data on first login."""
+    business = db.query(BusinessProfile).filter(BusinessProfile.slug == "abc-photography").first()
+    customer = db.query(User).filter(User.email == "customer@servicesos.io").first()
+    if not business or not customer:
+        return
+
+    manager = get_or_create_user(db, "staff.manager@servicesos.io", "Priya Menon", UserRole.business, city="Hyderabad")
+    if not db.query(BusinessStaff).filter(BusinessStaff.business_id == business.id, BusinessStaff.user_id == manager.id).first():
+        db.add(BusinessStaff(business_id=business.id, user_id=manager.id, role=BusinessStaffRole.manager))
+
+    if db.query(Booking).filter(Booking.business_id == business.id, Booking.customer_id == customer.id).first():
+        db.commit()
+        return  # activity already seeded
+
+    service = db.query(Service).filter(Service.business_id == business.id, Service.title == "Wedding Photography").first()
+    package = db.query(Package).filter(Package.service_id == service.id).first()
+
+    booking = Booking(
+        customer_id=customer.id,
+        business_id=business.id,
+        service_id=service.id,
+        package_id=package.id,
+        status=BookingStatus.completed,
+        scheduled_date=dt.date.today() - dt.timedelta(days=5),
+        amount_total=float(package.price),
+        amount_advance=round(float(package.price) * 0.3, 2),
+        amount_paid=float(package.price),
+        amount_refunded=2000,
+        commission_rate=float(business.commission_rate),
+        commission_amount=round(float(package.price) * float(business.commission_rate), 2),
+        tags="vip,referral",
+        completed_at=dt.datetime.utcnow() - dt.timedelta(days=3),
+    )
+    db.add(booking)
+    db.flush()
+
+    db.add(Payment(booking_id=booking.id, amount=booking.amount_paid, payment_type=PaymentType.full, method=PaymentMethod.upi, status=PaymentStatus.success, gateway_ref="mock_txn_seed001"))
+    db.add(Payment(booking_id=booking.id, amount=2000, payment_type=PaymentType.refund, method=PaymentMethod.wallet, status=PaymentStatus.refunded, gateway_ref="mock_refund_seed001"))
+    customer.wallet_balance = float(customer.wallet_balance) + 2000
+
+    for event_type, message in [
+        ("status_change", "Booking requested by Ananya Rao."),
+        ("status_change", "Status changed from requested to accepted by ABC Photography Owner."),
+        ("status_change", "Status changed from accepted to scheduled by ABC Photography Owner."),
+        ("status_change", "Status changed from scheduled to in_progress by ABC Photography Owner."),
+        ("status_change", "Status changed from in_progress to completed by ABC Photography Owner."),
+        ("tag", "Tags updated: vip,referral"),
+        ("note", "Customer requested extra album copies — noted for delivery."),
+        ("refund", "Refunded ₹2,000.00 — one edited album was delivered late."),
+    ]:
+        db.add(BookingEvent(booking_id=booking.id, actor_id=business.owner_id, event_type=event_type, message=message))
+
+    net_available = float(booking.amount_paid) - float(booking.amount_refunded) - float(booking.commission_amount)
+    payout_amount = round(net_available * 0.6, 2)
+    db.add(PayoutRecord(business_id=business.id, amount=payout_amount, status=PayoutStatus.paid, reference="payout_seed001"))
+
+    db.commit()
+    print("Seeded one full order lifecycle (booking, payment, refund, payout) and a manager teammate for ABC Photography.")
+
+
 def main():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         categories = seed_categories(db)
         seed_demo_marketplace(db, categories)
+        seed_demo_activity(db)
     finally:
         db.close()
 
