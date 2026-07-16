@@ -27,3 +27,4 @@ npm-debug.log*
 *.swp
 .vscode/
 .idea/
+tsconfig.tsbuildinfo
