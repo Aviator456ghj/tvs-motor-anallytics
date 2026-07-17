@@ -1,8 +1,8 @@
-import { UserPlus, Repeat, RotateCcw, HeartHandshake, TrendingDown, ArrowUp, type LucideIcon } from "lucide-react";
+import { UserPlus, Repeat, Crown, HeartHandshake, TrendingDown, ArrowUp, type LucideIcon } from "lucide-react";
 import { Card, CardHeader, ViewAllLink } from "@/components/ui/Card";
 import { customerInsights } from "@/lib/dashboard-data";
 
-const icons: LucideIcon[] = [UserPlus, Repeat, RotateCcw, HeartHandshake, TrendingDown];
+const icons: LucideIcon[] = [UserPlus, Repeat, Crown, HeartHandshake, TrendingDown];
 
 export default function CustomerInsightsCard() {
   return (

@@ -1,7 +1,7 @@
 "use client";
 
 import { Sparkles, ArrowUp } from "lucide-react";
-import { aiSuggestions } from "@/lib/dashboard-data";
+import { aiCapabilities } from "@/lib/dashboard-data";
 
 export default function AIAssistantCard() {
   return (
@@ -23,7 +23,7 @@ export default function AIAssistantCard() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {aiSuggestions.map((s) => (
+        {aiCapabilities.map((s) => (
           <button
             key={s}
             className="text-[11.5px] px-3 py-1.5 rounded-full bg-white/15 hover:bg-white/25 transition-colors leading-tight"

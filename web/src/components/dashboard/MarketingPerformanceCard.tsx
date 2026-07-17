@@ -1,10 +1,11 @@
-import { Mail, MessageCircle, ArrowUp, type LucideIcon } from "lucide-react";
+import { Mail, MessageCircle, Wallet, ArrowUp, type LucideIcon } from "lucide-react";
 import { Card, CardHeader, ViewAllLink } from "@/components/ui/Card";
 import { marketingPerformance } from "@/lib/dashboard-data";
 
 const iconMap: Record<string, LucideIcon> = {
   mail: Mail,
   sms: MessageCircle,
+  spend: Wallet,
 };
 
 const brandBadge: Record<string, { label: string; className: string }> = {

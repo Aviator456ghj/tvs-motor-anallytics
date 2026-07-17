@@ -3,6 +3,7 @@ import StatCardsRow from "@/components/dashboard/StatCardsRow";
 import SalesOverviewCard from "@/components/dashboard/SalesOverviewCard";
 import SalesByChannelCard from "@/components/dashboard/SalesByChannelCard";
 import TasksCard from "@/components/dashboard/TasksCard";
+import ActivityFeedCard from "@/components/dashboard/ActivityFeedCard";
 import RecentOrdersCard from "@/components/dashboard/RecentOrdersCard";
 import InventoryAlertsCard from "@/components/dashboard/InventoryAlertsCard";
 import CustomerInsightsCard from "@/components/dashboard/CustomerInsightsCard";
@@ -21,14 +22,20 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 xl:grid-cols-[2fr_1fr_1fr] gap-4">
         <SalesOverviewCard />
         <SalesByChannelCard />
-        <TasksCard />
+        <div className="flex flex-col gap-4">
+          <TasksCard />
+          <ActivityFeedCard />
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.9fr_0.85fr_1fr_0.95fr] gap-4">
+      <div className="min-w-0">
         <RecentOrdersCard />
-        <InventoryAlertsCard />
-        <CustomerInsightsCard />
-        <AIAssistantCard />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="min-w-0"><InventoryAlertsCard /></div>
+        <div className="min-w-0"><CustomerInsightsCard /></div>
+        <div className="min-w-0"><AIAssistantCard /></div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

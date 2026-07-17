@@ -1,6 +1,23 @@
 "use client";
 
-import { ShoppingCart, ShoppingBag, Users, Filter, BarChart3, DollarSign, ArrowUp, ArrowDown, type LucideIcon } from "lucide-react";
+import {
+  ShoppingCart,
+  ShoppingBag,
+  Users,
+  Filter,
+  BarChart3,
+  DollarSign,
+  Calendar,
+  TrendingUp,
+  Clock,
+  Repeat,
+  Package,
+  RotateCcw,
+  AlertTriangle,
+  ArrowUp,
+  ArrowDown,
+  type LucideIcon,
+} from "lucide-react";
 import { Line, LineChart, ResponsiveContainer } from "recharts";
 import { Card } from "@/components/ui/Card";
 import { statCards, type StatCard } from "@/lib/dashboard-data";
@@ -12,34 +29,42 @@ const iconMap: Record<StatCard["icon"], LucideIcon> = {
   filter: Filter,
   chart: BarChart3,
   dollar: DollarSign,
+  calendar: Calendar,
+  "trending-up": TrendingUp,
+  clock: Clock,
+  repeat: Repeat,
+  package: Package,
+  "rotate-ccw": RotateCcw,
+  "alert-triangle": AlertTriangle,
 };
 
 export default function StatCardsRow() {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
       {statCards.map((stat) => {
         const Icon = iconMap[stat.icon];
         const DeltaIcon = stat.deltaDirection === "up" ? ArrowUp : ArrowDown;
+        const deltaColor = stat.deltaDirection === "up" ? "text-success" : "text-danger";
         const data = stat.sparkline.map((v, i) => ({ i, v }));
         return (
-          <Card key={stat.id} className="p-4 flex flex-col gap-3">
+          <Card key={stat.id} className="p-3.5 flex flex-col gap-2.5">
             <div className="flex items-start justify-between">
-              <span className="text-[12.5px] font-medium text-muted">{stat.label}</span>
-              <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${stat.iconBg} ${stat.iconColor}`}>
-                <Icon size={16} strokeWidth={2.2} />
+              <span className="text-[11.5px] font-medium text-muted leading-tight">{stat.label}</span>
+              <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${stat.iconBg} ${stat.iconColor}`}>
+                <Icon size={14} strokeWidth={2.2} />
               </span>
             </div>
-            <div className="text-[22px] font-bold text-foreground leading-none tracking-tight">
+            <div className="text-[19px] font-bold text-foreground leading-none tracking-tight">
               {stat.value}
             </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-0.5 text-[12px] font-semibold text-success">
-                <DeltaIcon size={12} />
+            <div className="flex items-center justify-between gap-1">
+              <span className={`flex items-center gap-0.5 text-[11px] font-semibold shrink-0 ${deltaColor}`}>
+                <DeltaIcon size={11} />
                 {stat.delta}
               </span>
-              <span className="text-[11px] text-muted-light">{stat.compareLabel}</span>
+              <span className="text-[10.5px] text-muted-light truncate text-right">{stat.compareLabel}</span>
             </div>
-            <div className="h-8 -mx-1">
+            <div className="h-6 -mx-1">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data}>
                   <Line
