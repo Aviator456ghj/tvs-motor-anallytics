@@ -11,7 +11,7 @@ export const ordersNavItems: OrdersNavItem[] = [
   { key: "create", label: "Create Order", href: "/orders/create", icon: "plus-square", built: true },
   { key: "details", label: "Order Details", href: "/orders/ORD-2843", icon: "file-text", built: true },
   { key: "fulfillment", label: "Fulfillment Center", href: "/orders/fulfillment", icon: "truck", built: true },
-  { key: "returns", label: "Returns (RMA)", href: "/orders/returns", icon: "rotate-ccw", built: false },
+  { key: "returns", label: "Returns (RMA)", href: "/orders/returns", icon: "rotate-ccw", built: true },
   { key: "refunds", label: "Refund Center", href: "/orders/refunds", icon: "banknote", built: false },
   { key: "drafts", label: "Draft Orders", href: "/orders/drafts", icon: "file-edit", built: false },
   { key: "bulk", label: "Bulk Operations", href: "/orders/bulk", icon: "list-checks", built: false },

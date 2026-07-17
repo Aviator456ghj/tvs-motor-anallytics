@@ -18,13 +18,13 @@ Implemented once via `app/orders/layout.tsx` (wraps every route under `app/order
 | 2.2.2 | [Create Order](./02-create-order.md) | ✅ Built | 5-step wizard — reference implementation at `/web/src/app/orders/create/page.tsx` |
 | 2.2.3 | [Order Details](./03-order-details.md) | ✅ Built | 11-tab 360° hub — reference implementation at `/web/src/app/orders/[id]/page.tsx` |
 | 2.2.4 | [Fulfillment Center](./04-fulfillment-center.md) | ✅ Built | Pick/pack/ship queue — reference implementation at `/web/src/app/orders/fulfillment/page.tsx` |
-| 2.2.5 | Returns (RMA) | ⬜ Not started | Return initiation, inspection, disposition |
+| 2.2.5 | [Returns (RMA)](./05-returns-rma.md) | ✅ Built | Return initiation, inspection, disposition — reference implementation at `/web/src/app/orders/returns/page.tsx` |
 | 2.2.6 | Refund Center | ⬜ Not started | Refund queue, approval workflow, ledger tie-in |
 | 2.2.7 | Draft Orders | ⬜ Not started | Unplaced/quote-stage orders |
 | 2.2.8 | Bulk Operations | ⬜ Not started | Job status/history for bulk actions triggered from 2.2.1 |
 | 2.2.9 | Order Settings | ⬜ Not started | Order number format, default statuses, SLA thresholds |
 
-Progress: 4 / 9 screens (44%).
+Progress: 5 / 9 screens (56%).
 
 ## Cross-cutting rules (apply across all 9 screens)
 
