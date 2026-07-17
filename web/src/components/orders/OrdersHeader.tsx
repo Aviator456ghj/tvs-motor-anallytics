@@ -1,6 +1,4 @@
-"use client";
-
-import { ChevronRight, Download, Upload, ChevronDown, Plus } from "lucide-react";
+import { ChevronRight, Download, Upload, Plus } from "lucide-react";
 
 export default function OrdersHeader() {
   return (
@@ -22,11 +20,13 @@ export default function OrdersHeader() {
           <Upload size={14} />
           Import
         </button>
-        <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-brand-start to-brand-end text-white text-[13px] font-medium pl-4 pr-3 py-2 shadow-sm hover:opacity-90 transition-opacity">
+        <a
+          href="/orders/create"
+          className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-brand-start to-brand-end text-white text-[13px] font-medium pl-4 pr-3 py-2 shadow-sm hover:opacity-90 transition-opacity"
+        >
           <Plus size={14} />
           Create Order
-          <ChevronDown size={13} className="ml-1" />
-        </button>
+        </a>
       </div>
     </div>
   );

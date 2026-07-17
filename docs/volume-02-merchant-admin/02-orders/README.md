@@ -7,7 +7,7 @@ Central hub for the full order lifecycle — from placement through payment capt
 | # | Screen | Status | Notes |
 |---|---|---|---|
 | 2.2.1 | [Orders Dashboard](./01-orders-dashboard.md) | ✅ Built | List + inline detail panel — reference implementation at `/web/src/app/orders/page.tsx` |
-| 2.2.2 | Create Order | ⬜ Not started | Manual/POS/phone order entry |
+| 2.2.2 | [Create Order](./02-create-order.md) | ✅ Built | 5-step wizard — reference implementation at `/web/src/app/orders/create/page.tsx` |
 | 2.2.3 | Order Details (full page) | ⬜ Not started | Dedicated `/orders/{id}` route — the Dashboard's inline panel is the v1 preview of this |
 | 2.2.4 | Fulfillment Center | ⬜ Not started | Pick/pack/ship queue across locations |
 | 2.2.5 | Returns (RMA) | ⬜ Not started | Return initiation, inspection, disposition |

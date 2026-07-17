@@ -20,15 +20,22 @@ export default function OrdersRightSidebar() {
         <div className="flex flex-col gap-1">
           {quickActions.map((action) => {
             const Icon = iconMap[action.icon];
-            return (
-              <button
-                key={action.id}
-                className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-[12.5px] font-medium text-foreground hover:bg-background/80 text-left"
-              >
+            const content = (
+              <>
                 <span className="w-7 h-7 rounded-lg bg-background flex items-center justify-center text-brand-start shrink-0">
                   <Icon size={14} />
                 </span>
                 {action.label}
+              </>
+            );
+            const className = "flex items-center gap-2.5 rounded-lg px-2 py-2 text-[12.5px] font-medium text-foreground hover:bg-background/80 text-left";
+            return action.label === "Create Order" ? (
+              <a key={action.id} href="/orders/create" className={className}>
+                {content}
+              </a>
+            ) : (
+              <button key={action.id} className={className}>
+                {content}
               </button>
             );
           })}
