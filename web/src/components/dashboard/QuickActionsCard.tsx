@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Tag,
   Package,
@@ -40,9 +41,9 @@ export default function QuickActionsCard() {
           );
           const className = "flex flex-col items-center gap-2 rounded-lg py-3 px-1 hover:bg-background/80 transition-colors";
           return action.label === "Create Order" ? (
-            <a key={action.id} href="/orders/create" className={className}>
+            <Link key={action.id} href="/orders/create" className={className}>
               {content}
-            </a>
+            </Link>
           ) : (
             <button key={action.id} className={className}>
               {content}

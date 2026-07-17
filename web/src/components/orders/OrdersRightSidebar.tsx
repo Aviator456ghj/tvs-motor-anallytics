@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { PlusSquare, Upload, Download, RotateCcw, ListChecks, FileText, Receipt, type LucideIcon } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { quickActions, paymentStatusLegend, fulfillmentStatusLegend, orderStatusLegend } from "@/lib/orders-data";
@@ -30,9 +31,9 @@ export default function OrdersRightSidebar() {
             );
             const className = "flex items-center gap-2.5 rounded-lg px-2 py-2 text-[12.5px] font-medium text-foreground hover:bg-background/80 text-left";
             return action.label === "Create Order" ? (
-              <a key={action.id} href="/orders/create" className={className}>
+              <Link key={action.id} href="/orders/create" className={className}>
                 {content}
-              </a>
+              </Link>
             ) : (
               <button key={action.id} className={className}>
                 {content}

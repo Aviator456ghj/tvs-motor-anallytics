@@ -8,7 +8,7 @@ Central hub for the full order lifecycle — from placement through payment capt
 |---|---|---|---|
 | 2.2.1 | [Orders Dashboard](./01-orders-dashboard.md) | ✅ Built | List + inline detail panel — reference implementation at `/web/src/app/orders/page.tsx` |
 | 2.2.2 | [Create Order](./02-create-order.md) | ✅ Built | 5-step wizard — reference implementation at `/web/src/app/orders/create/page.tsx` |
-| 2.2.3 | Order Details (full page) | ⬜ Not started | Dedicated `/orders/{id}` route — the Dashboard's inline panel is the v1 preview of this |
+| 2.2.3 | [Order Details](./03-order-details.md) | ✅ Built | 11-tab 360° hub — reference implementation at `/web/src/app/orders/[id]/page.tsx` |
 | 2.2.4 | Fulfillment Center | ⬜ Not started | Pick/pack/ship queue across locations |
 | 2.2.5 | Returns (RMA) | ⬜ Not started | Return initiation, inspection, disposition |
 | 2.2.6 | Refund Center | ⬜ Not started | Refund queue, approval workflow, ledger tie-in |

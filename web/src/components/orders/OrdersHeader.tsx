@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ChevronRight, Download, Upload, Plus } from "lucide-react";
 
 export default function OrdersHeader() {
@@ -20,13 +21,13 @@ export default function OrdersHeader() {
           <Upload size={14} />
           Import
         </button>
-        <a
+        <Link
           href="/orders/create"
           className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-brand-start to-brand-end text-white text-[13px] font-medium pl-4 pr-3 py-2 shadow-sm hover:opacity-90 transition-opacity"
         >
           <Plus size={14} />
           Create Order
-        </a>
+        </Link>
       </div>
     </div>
   );

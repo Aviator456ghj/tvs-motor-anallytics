@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Eye, Pencil, MoreHorizontal, Copy, RotateCcw, XCircle, Archive, Trash2, History, ShieldAlert } from "lucide-react";
 import type { Order, OrderColumnKey, PaymentStatus, FulfillmentStatus } from "@/lib/orders-data";
 
@@ -101,9 +102,9 @@ export default function OrdersTable({
                   />
                 </td>
                 <td className="py-2.5 pr-3 font-medium text-brand-start whitespace-nowrap">
-                  <button onClick={() => onView(order.id)} className="hover:underline">
+                  <Link href={`/orders/${order.id.replace("#", "")}`} className="hover:underline">
                     {order.id}
-                  </button>
+                  </Link>
                 </td>
                 <td className="py-2.5 pr-3 text-muted-light whitespace-nowrap">{order.date}</td>
                 {col("customer") && <td className="py-2.5 pr-3 text-foreground whitespace-nowrap">{order.customer}</td>}
