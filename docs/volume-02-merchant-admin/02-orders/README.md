@@ -2,6 +2,14 @@
 
 Central hub for the full order lifecycle — from placement through payment capture, fulfillment, shipping, returns, and refunds. This is where staff spend the most operational time day-to-day, so unlike Dashboard (Volume 2.1, a single screen) Orders is documented and built as a **9-screen module**. Each screen gets its own full-depth spec as it's built; this page is the module-level index and the cross-cutting rules that apply to every screen in it.
 
+## Orders Workspace Navigation (standard from Screen 2.2.4 onward)
+Every Orders screen carries **three navigation levels**:
+1. **Global navigation** (left sidebar) — unchanged across the whole platform.
+2. **Orders workspace navigation** — a persistent bar below the top bar, present on every `/orders/*` route, linking directly between all 9 screens (Dashboard, Create Order, Order Details, Fulfillment Center, Returns (RMA), Refund Center, Draft Orders, Bulk Operations, Order Settings) with the current one highlighted. Users never leave the Orders workspace to move between its screens.
+3. **Current screen** — content specific to that page, documented on its own page below.
+
+Implemented once via `app/orders/layout.tsx` (wraps every route under `app/orders/**`) + `components/orders/OrdersWorkspaceNav.tsx` (derives the active tab from the URL). This applies retroactively to 2.2.1–2.2.3 and forward to every remaining screen — see [2.2.4 Fulfillment Center](./04-fulfillment-center.md) for the implementation note.
+
 ## Screens
 
 | # | Screen | Status | Notes |
@@ -9,12 +17,14 @@ Central hub for the full order lifecycle — from placement through payment capt
 | 2.2.1 | [Orders Dashboard](./01-orders-dashboard.md) | ✅ Built | List + inline detail panel — reference implementation at `/web/src/app/orders/page.tsx` |
 | 2.2.2 | [Create Order](./02-create-order.md) | ✅ Built | 5-step wizard — reference implementation at `/web/src/app/orders/create/page.tsx` |
 | 2.2.3 | [Order Details](./03-order-details.md) | ✅ Built | 11-tab 360° hub — reference implementation at `/web/src/app/orders/[id]/page.tsx` |
-| 2.2.4 | Fulfillment Center | ⬜ Not started | Pick/pack/ship queue across locations |
+| 2.2.4 | [Fulfillment Center](./04-fulfillment-center.md) | ✅ Built | Pick/pack/ship queue — reference implementation at `/web/src/app/orders/fulfillment/page.tsx` |
 | 2.2.5 | Returns (RMA) | ⬜ Not started | Return initiation, inspection, disposition |
 | 2.2.6 | Refund Center | ⬜ Not started | Refund queue, approval workflow, ledger tie-in |
 | 2.2.7 | Draft Orders | ⬜ Not started | Unplaced/quote-stage orders |
 | 2.2.8 | Bulk Operations | ⬜ Not started | Job status/history for bulk actions triggered from 2.2.1 |
 | 2.2.9 | Order Settings | ⬜ Not started | Order number format, default statuses, SLA thresholds |
+
+Progress: 4 / 9 screens (44%).
 
 ## Cross-cutting rules (apply across all 9 screens)
 
