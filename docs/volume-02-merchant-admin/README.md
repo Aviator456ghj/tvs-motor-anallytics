@@ -26,7 +26,7 @@ Status: ✅ Full depth. The Merchant Admin is the operator-facing control panel 
 ## Modules in this volume
 
 1. [Dashboard](./01-dashboard.md) — store-health command center, KPIs, AI assistant entry point
-2. [Orders](./02-orders.md) — order lifecycle, fulfillment, payments, refunds
+2. [Orders](./02-orders/README.md) — order lifecycle, fulfillment, payments, refunds. 9-screen module; [2.2.1 Orders Dashboard](./02-orders/01-orders-dashboard.md) is built
 3. [Products](./03-products.md) — catalog, variants, media, inventory linkage
 4. [Customers](./04-customers.md) — customer records, segments, CRM-lite
 5. [Marketing](./05-marketing.md) — campaigns, email/SMS, ads integration

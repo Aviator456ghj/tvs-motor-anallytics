@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   ShoppingBag,
@@ -59,6 +60,7 @@ const channelBadge: Record<string, { label: string; className: string }> = {
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const pathname = usePathname();
 
   return (
     <aside
@@ -83,7 +85,7 @@ export default function Sidebar() {
       <nav className="flex-1 overflow-y-auto px-3 pb-4 space-y-0.5">
         {mainNav.map((item) => {
           const Icon = iconMap[item.icon] ?? LayoutDashboard;
-          const active = item.id === "dashboard";
+          const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (
             <a
               key={item.id}
